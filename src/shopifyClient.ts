@@ -249,7 +249,7 @@ export class ShopifyClient {
       const batch = data.edges.map((e: { node: GqlProductNode }) => normaliseProduct(e.node));
       products.push(...batch);
 
-      logger.debug(`Shopify page ${page}: fetched ${batch.length} products (total: ${products.length})`);
+      logger.info(`Shopify page ${page}: +${batch.length} products (running total: ${products.length})`);
 
       cursor = data.pageInfo.hasNextPage ? data.pageInfo.endCursor : null;
     } while (cursor !== null);

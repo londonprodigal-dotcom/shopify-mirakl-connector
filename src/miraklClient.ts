@@ -9,8 +9,8 @@ import { logger } from './logger';
 // Mirakl import status strings returned by the API
 type RawStatus = 'WAITING' | 'RUNNING' | 'COMPLETE' | 'FAILED';
 
-const POLL_INTERVAL_MS = 5_000;  // 5 seconds between polls
-const POLL_TIMEOUT_MS  = 300_000; // 5 minutes max wait
+const POLL_INTERVAL_MS = 10_000;   // 10 seconds between polls
+const POLL_TIMEOUT_MS  = 7_200_000; // 2 hours max wait (large catalogs can be slow)
 
 // ─── MiraklClient ─────────────────────────────────────────────────────────────
 
@@ -30,7 +30,7 @@ export class MiraklClient {
         Authorization: config.mirakl.apiKey,
         Accept: 'application/json',
       },
-      timeout: 60_000,
+      timeout: 300_000, // 5 min — large CSV uploads can be slow
     });
 
     // Log all outgoing requests at debug level

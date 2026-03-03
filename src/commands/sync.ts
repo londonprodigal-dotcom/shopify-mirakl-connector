@@ -62,6 +62,8 @@ export async function runSync(options: SyncOptions): Promise<SyncResult> {
     return emptyResult();
   }
 
+  logger.info(`Fetched ${products.length} products with ${products.reduce((n, p) => n + p.variants.length, 0)} total variants`);
+
   // ─── 5. Map to Mirakl rows ──────────────────────────────────────────────────
   const result: SyncResult = {
     totalProducts:    products.length,
@@ -79,7 +81,9 @@ export async function runSync(options: SyncOptions): Promise<SyncResult> {
   if (isCombined && templates.combined) {
     // ── Combined template: one row per variant with ALL 181 columns ───────────
     outputHeaders = templates.combined.headers;
-    for (const product of products) {
+    logger.info(`Mapping ${products.length} products to combined rows...`);
+    for (let i = 0; i < products.length; i++) {
+      const product = products[i]!;
       try {
         const rows = mapCombinedRows(product, outputHeaders, mapping, stockOnly);
         outputRows.push(...rows);
@@ -92,7 +96,11 @@ export async function runSync(options: SyncOptions): Promise<SyncResult> {
         result.errors.push({ identifier: product.title, reason });
         logger.error('Failed to map product', { title: product.title, error: reason });
       }
+      if ((i + 1) % 100 === 0) {
+        logger.info(`  Mapped ${i + 1}/${products.length} products (${outputRows.length} rows so far)...`);
+      }
     }
+    logger.info(`Mapping complete: ${outputRows.length} rows from ${products.length} products`);
   } else {
     // ── Separate product + offer templates ────────────────────────────────────
     const productRows: MiraklRow[] = [];
