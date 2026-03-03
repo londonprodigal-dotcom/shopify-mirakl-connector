@@ -1,0 +1,8 @@
+Place Mirakl template files here.
+See README.md § "Downloading Mirakl Templates" for instructions.
+
+Accepted file names (must contain one of: product, offer, import):
+  products-template.xlsx
+  offers-template.xlsx
+  import-template.xlsx
+  (CSV variants of the above are also accepted)

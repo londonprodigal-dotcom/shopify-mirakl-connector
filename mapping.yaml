@@ -1,0 +1,141 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Shopify → Mirakl Mapping Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Edit this file to customise how Shopify data maps to Mirakl attribute codes.
+# The attribute codes here must exactly match the column headers in your
+# Mirakl-generated template files (case-insensitive matching is applied).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Default offer/product field values applied when Shopify has no data.
+defaults:
+  # Offer state code: 11 = New, 1 = New, etc. (check your Mirakl config)
+  state_code: "11"
+  state_label: "New"
+  # Lead time in working days
+  leadtime_to_ship: 3
+  # ISO 4217 currency code
+  currency: "GBP"
+  # Offer condition description shown to buyers
+  condition_description: ""
+  # Min/max order quantities (0 = no restriction)
+  min_order_quantity: 1
+  max_order_quantity: 0
+  # Shipping / logistic class code (configure in Mirakl back office)
+  logistic_class: ""
+  # Default update mode: U = upsert, D = delete
+  update_delete: "U"
+
+# ─── Category mappings ────────────────────────────────────────────────────────
+# Maps Shopify product_type values to Mirakl category codes.
+# The Mirakl category code is displayed in your back office under
+# Catalog → Categories. Add all your product types below.
+#
+# Example:
+#   "Dresses": "FA_DRESSES"
+#   "Tops": "FA_TOPS"
+#
+categoryMappings:
+  "Dresses": "FA_DRESSES"
+  "Tops": "FA_TOPS"
+  "Jumpers": "FA_KNITWEAR"
+  "Knitwear": "FA_KNITWEAR"
+  "Skirts": "FA_SKIRTS"
+  "Trousers": "FA_TROUSERS"
+  "Jeans": "FA_JEANS"
+  "Shorts": "FA_SHORTS"
+  "Coats": "FA_COATS"
+  "Jackets": "FA_COATS"
+  "Shoes": "FA_SHOES"
+  "Accessories": "FA_ACCESSORIES"
+  "Bags": "FA_BAGS"
+  "Jewellery": "FA_JEWELLERY"
+  # Fallback – used when no match found
+  "_default": "FA_WOMENSWEAR"
+
+# ─── Tag → attribute mappings ─────────────────────────────────────────────────
+# Map Shopify tags to specific Mirakl attribute values.
+# Structure: tagMappings.<mirakl_attribute_code>.<shopify_tag> = <mirakl_value>
+#
+tagMappings:
+  occasion:
+    "casual": "Casual"
+    "formal": "Formal"
+    "evening": "Evening"
+    "workwear": "Work"
+  style:
+    "bohemian": "Bohemian"
+    "vintage": "Vintage"
+    "contemporary": "Contemporary"
+
+# ─── Shopify option name aliases ──────────────────────────────────────────────
+# Shopify option names may vary (Color / Colour / Farbe).
+# List all aliases that should map to the colour or size attributes.
+optionAliases:
+  color:
+    - "Color"
+    - "Colour"
+    - "Farbe"
+    - "color"
+    - "colour"
+  size:
+    - "Size"
+    - "Taille"
+    - "size"
+    - "UK Size"
+    - "UK size"
+
+# ─── Product field mappings ───────────────────────────────────────────────────
+# Maps Mirakl template column headers (lower-cased, spaces→hyphens)
+# to a data source descriptor.
+#
+# Descriptor format:
+#   "field:<path>"      – read from ShopifyProduct/Variant (dot-notation)
+#   "static:<value>"    – always use this literal value
+#   "default:<key>"     – use value from defaults section above
+#   "option:<alias>"    – read from variant selectedOptions (alias group above)
+#   "image:<index>"     – product image at 0-based index
+#   "mapped:<field>"    – apply categoryMappings / tagMappings to this field
+#   "tag:<prefix>"      – extract tag value after prefix (e.g. "color:")
+#
+productFieldMappings:
+  "seller-product-id": "field:product.numericId"
+  "seller-article-id": "field:variant.numericId"
+  "ean": "field:variant.barcode"
+  "title": "field:product.title"
+  "description": "field:product.description"
+  "brand": "field:product.vendor"
+  "category": "mapped:product.productType"
+  "product-type": "field:product.productType"
+  "color": "option:color"
+  "colour": "option:color"
+  "size": "option:size"
+  "weight": "field:variant.weight"
+  "weight-unit": "field:variant.weightUnit"
+  "main-image": "image:0"
+  "image-2": "image:1"
+  "image-3": "image:2"
+  "image-4": "image:3"
+  "image-5": "image:4"
+  "tags": "field:product.tags"
+
+# ─── Offer field mappings ─────────────────────────────────────────────────────
+offerFieldMappings:
+  "sku": "field:variant.sku"
+  "seller-product-id": "field:product.numericId"
+  "seller-article-id": "field:variant.numericId"
+  "product-id": "field:variant.barcode"
+  "product-id-type": "static:EAN"
+  "price": "field:variant.price"
+  "discount-price": "field:variant.compareAtPrice"
+  "quantity": "field:variant.inventoryQuantity"
+  "state-code": "default:state_code"
+  "state": "default:state_label"
+  "leadtime-to-ship": "default:leadtime_to_ship"
+  "currency-iso-code": "default:currency"
+  "update-delete": "default:update_delete"
+  "min-quantity-alert": "static:5"
+  "logistic-class": "default:logistic_class"
+  "min-order-quantity": "default:min_order_quantity"
+  "description": "field:product.description"

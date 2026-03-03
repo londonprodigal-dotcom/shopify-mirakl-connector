@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+output/
+state/
+reports/*.log
+reports/*-errors.csv
+# Keep template placeholders but not actual templates (they may be proprietary)
+templates/*.xlsx
+templates/*.xls
+templates/*.csv
+!templates/.gitkeep
