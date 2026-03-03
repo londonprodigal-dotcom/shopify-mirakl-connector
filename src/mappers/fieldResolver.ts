@@ -49,6 +49,16 @@ export function resolveField(
     case 'tag':
       return resolveTag(param, product);
 
+    case 'colorfacet': {
+      // Resolve colour option, then map to Debenhams Colour Facet value
+      const colorVal = resolveOption(param, variant, mapping);
+      if (!colorVal) return null;
+      const str = String(colorVal);
+      const facet = mapping.colourFacetMappings?.[str];
+      if (!facet) return str; // pass through if not in map
+      return facet;
+    }
+
     default:
       return undefined;
   }

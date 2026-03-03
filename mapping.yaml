@@ -1,141 +1,253 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Shopify → Mirakl Mapping Configuration
-# ─────────────────────────────────────────────────────────────────────────────
-#
-# Edit this file to customise how Shopify data maps to Mirakl attribute codes.
-# The attribute codes here must exactly match the column headers in your
-# Mirakl-generated template files (case-insensitive matching is applied).
-#
+# Shopify → Mirakl / Debenhams Mapping Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Default offer/product field values applied when Shopify has no data.
 defaults:
-  # Offer state code: 11 = New, 1 = New, etc. (check your Mirakl config)
   state_code: "11"
   state_label: "New"
-  # Lead time in working days
   leadtime_to_ship: 3
-  # ISO 4217 currency code
   currency: "GBP"
-  # Offer condition description shown to buyers
-  condition_description: ""
-  # Min/max order quantities (0 = no restriction)
-  min_order_quantity: 1
-  max_order_quantity: 0
-  # Shipping / logistic class code (configure in Mirakl back office)
-  logistic_class: ""
-  # Default update mode: U = upsert, D = delete
   update_delete: "U"
+  gender: "Women"
+  # Returns: must be exactly one of: Standard | Hygiene | Nonrefundable
+  # Hygiene = swimwear, lingerie, face masks, pierced jewellery, cosmetics
+  # Nonrefundable = perishable/custom items
+  # Standard = everything else
+  returns: "Standard"
 
-# ─── Category mappings ────────────────────────────────────────────────────────
-# Maps Shopify product_type values to Mirakl category codes.
-# The Mirakl category code is displayed in your back office under
-# Catalog → Categories. Add all your product types below.
-#
-# Example:
-#   "Dresses": "FA_DRESSES"
-#   "Tops": "FA_TOPS"
-#
+# ─── Shopify product_type → Mirakl product_category code ─────────────────────
 categoryMappings:
   "Dresses": "FA_DRESSES"
   "Tops": "FA_TOPS"
+  "Blouses": "FA_TOPS"
+  "T-Shirts": "FA_TOPS"
+  "Shirts": "FA_SHIRTS"
   "Jumpers": "FA_KNITWEAR"
   "Knitwear": "FA_KNITWEAR"
+  "Cardigans": "FA_KNITWEAR"
   "Skirts": "FA_SKIRTS"
   "Trousers": "FA_TROUSERS"
   "Jeans": "FA_JEANS"
   "Shorts": "FA_SHORTS"
   "Coats": "FA_COATS"
   "Jackets": "FA_COATS"
+  "Jumpsuits": "FA_JUMPSUITS"
+  "Playsuits": "FA_PLAYSUITS"
+  "Co-ords": "FA_COORDS"
+  "Swimwear": "FA_SWIMWEAR"
+  "Lingerie": "FA_LINGERIE"
+  "Nightwear": "FA_NIGHTWEAR"
+  "Loungewear": "FA_LOUNGEWEAR"
+  "Hoodies": "FA_HOODIESSWEATSHIRTS"
+  "Sweatshirts": "FA_HOODIESSWEATSHIRTS"
+  "Leggings": "FA_LEGGINGS"
+  "Joggers": "FA_JOGGERS"
   "Shoes": "FA_SHOES"
-  "Accessories": "FA_ACCESSORIES"
   "Bags": "FA_BAGS"
+  "Accessories": "FA_ACCESSORIES"
   "Jewellery": "FA_JEWELLERY"
-  # Fallback – used when no match found
   "_default": "FA_WOMENSWEAR"
 
-# ─── Tag → attribute mappings ─────────────────────────────────────────────────
-# Map Shopify tags to specific Mirakl attribute values.
-# Structure: tagMappings.<mirakl_attribute_code>.<shopify_tag> = <mirakl_value>
-#
-tagMappings:
-  occasion:
-    "casual": "Casual"
-    "formal": "Formal"
-    "evening": "Evening"
-    "workwear": "Work"
-  style:
-    "bohemian": "Bohemian"
-    "vintage": "Vintage"
-    "contemporary": "Contemporary"
+tagMappings: {}
 
-# ─── Shopify option name aliases ──────────────────────────────────────────────
-# Shopify option names may vary (Color / Colour / Farbe).
-# List all aliases that should map to the colour or size attributes.
 optionAliases:
   color:
     - "Color"
     - "Colour"
-    - "Farbe"
-    - "color"
     - "colour"
+    - "color"
   size:
     - "Size"
-    - "Taille"
-    - "size"
     - "UK Size"
     - "UK size"
+    - "size"
 
-# ─── Product field mappings ───────────────────────────────────────────────────
-# Maps Mirakl template column headers (lower-cased, spaces→hyphens)
-# to a data source descriptor.
-#
-# Descriptor format:
-#   "field:<path>"      – read from ShopifyProduct/Variant (dot-notation)
-#   "static:<value>"    – always use this literal value
-#   "default:<key>"     – use value from defaults section above
-#   "option:<alias>"    – read from variant selectedOptions (alias group above)
-#   "image:<index>"     – product image at 0-based index
-#   "mapped:<field>"    – apply categoryMappings / tagMappings to this field
-#   "tag:<prefix>"      – extract tag value after prefix (e.g. "color:")
-#
+# ─── Colour → Debenhams Colour Facet mapping ──────────────────────────────────
+# Source: Colour Mapping.xlsx from Debenhams
+# All colours must be mapped to an approved Colour Facet value.
+colourFacetMappings:
+  # Beige
+  "Beige": "Beige"
+  "Camel": "Beige"
+  "Light Beige": "Beige"
+  "Light Brown": "Beige"
+  "Light Sand": "Beige"
+  "Light Stone": "Beige"
+  "Light Tan": "Beige"
+  "Medium Beige": "Beige"
+  "Natural": "Beige"
+  "Stone": "Beige"
+  "Taupe": "Beige"
+  # Black
+  "Black": "Black"
+  # Blue
+  "Aqua": "Blue"
+  "Baby Blue": "Blue"
+  "Blue": "Blue"
+  "Bright Blue": "Blue"
+  "Cobalt": "Blue"
+  "Dark Blue": "Blue"
+  "Dark Indigo": "Blue"
+  "Dark Navy": "Blue"
+  "Duck Egg Blue": "Blue"
+  "Indigo": "Blue"
+  "Light Blue": "Blue"
+  "Mid Blue": "Blue"
+  "Mid Navy": "Blue"
+  "Midnight": "Blue"
+  "Navy": "Blue"
+  "Pale Blue": "Blue"
+  "Royal": "Blue"
+  "Turquoise": "Blue"
+  # Brown
+  "Brown": "Brown"
+  "Chocolate": "Brown"
+  "Dark Brown": "Brown"
+  "Fawn": "Brown"
+  "Tan": "Brown"
+  # Clear
+  "Clear": "Clear"
+  # Green
+  "Bottle Green": "Green"
+  "Bright Green": "Green"
+  "Dark Green": "Green"
+  "Dark Olive": "Green"
+  "Emerald": "Green"
+  "Green": "Green"
+  "Jade": "Green"
+  "Light Green": "Green"
+  "Lime": "Green"
+  "Mint": "Green"
+  "Olive": "Green"
+  "Pale Green": "Green"
+  "Teal": "Green"
+  # Grey
+  "Charcoal": "Grey"
+  "Dark Grey": "Grey"
+  "Grey": "Grey"
+  "Light Grey": "Grey"
+  "Mid Grey": "Grey"
+  "Pale Grey": "Grey"
+  # Khaki
+  "Khaki": "Khaki"
+  "Light Khaki": "Khaki"
+  # Metallics
+  "Bronze": "Metallics"
+  "Gold": "Metallics"
+  "Light Bronze": "Metallics"
+  "Metallic Gold": "Metallics"
+  "Metallic Silver": "Metallics"
+  "Rose Gold": "Metallics"
+  "Metallics": "Metallics"
+  # Multi
+  "Multi": "Multi"
+  # Nude
+  "Nude": "Nude"
+  # Orange
+  "Amber": "Orange"
+  "Burnt Orange": "Orange"
+  "Copper": "Orange"
+  "Orange": "Orange"
+  "Pale Orange": "Orange"
+  "Peach": "Orange"
+  "Tangerine": "Orange"
+  "Terracotta": "Orange"
+  # Pink
+  "Baby Pink": "Pink"
+  "Bright Pink": "Pink"
+  "Cerise": "Pink"
+  "Coral": "Pink"
+  "Dark Pink": "Pink"
+  "Dusty Pink": "Pink"
+  "Fuchsia": "Pink"
+  "Light Pink": "Pink"
+  "Magenta": "Pink"
+  "Pale Pink": "Pink"
+  "Pink": "Pink"
+  "Raspberry": "Pink"
+  "Rose": "Pink"
+  # Purple
+  "Aubergine": "Purple"
+  "Dark Mauve": "Purple"
+  "Grape": "Purple"
+  "Lavender": "Purple"
+  "Lilac": "Purple"
+  "Mauve": "Purple"
+  "Pale Lilac": "Purple"
+  "Plum": "Purple"
+  "Purple": "Purple"
+  "Violet": "Purple"
+  # Red
+  "Burgundy": "Red"
+  "Crimson": "Red"
+  "Dark Red": "Red"
+  "Light Red": "Red"
+  "Maroon": "Red"
+  "Red": "Red"
+  "Scarlet": "Red"
+  "Wine": "Red"
+  # Silver
+  "Silver": "Silver"
+  # White
+  "Cream": "White"
+  "Ecru": "White"
+  "Ivory": "White"
+  "Off White": "White"
+  "White": "White"
+  # Yellow
+  "Bright Yellow": "Yellow"
+  "Lemon": "Yellow"
+  "Mustard": "Yellow"
+  "Yellow": "Yellow"
+
+# ─── Product field mappings (combined template, cols 1–163) ───────────────────
 productFieldMappings:
-  "seller-product-id": "field:product.numericId"
-  "seller-article-id": "field:variant.numericId"
-  "ean": "field:variant.barcode"
-  "title": "field:product.title"
-  "description": "field:product.description"
-  "brand": "field:product.vendor"
-  "category": "mapped:product.productType"
-  "product-type": "field:product.productType"
-  "color": "option:color"
-  "colour": "option:color"
-  "size": "option:size"
-  "weight": "field:variant.weight"
-  "weight-unit": "field:variant.weightUnit"
-  "main-image": "image:0"
-  "image-2": "image:1"
-  "image-3": "image:2"
-  "image-4": "image:3"
-  "image-5": "image:4"
-  "tags": "field:product.tags"
+  "product_category":         "mapped:product.productType"
+  "parent_product_id":        "field:product.numericId"
+  "product_id":               "field:variant.numericId"
+  "ean":                      "field:variant.barcode"
+  "product_title":            "field:product.title"
+  "long_description":         "field:product.description"
+  "colour":                   "option:color"
+  "colourfacet":              "colorfacet:color"
+  "gender":                   "default:gender"
+  "main_image":               "image:0"
+  # Debenhams supports main + 5 additional images (per guidelines)
+  "image_(additional_1)":     "image:1"
+  "image_(additional_2)":     "image:2"
+  "image_(additional_3)":     "image:3"
+  "image_(additional_4)":     "image:4"
+  "image_(additional_5)":     "image:5"
+  # Swatch is mandatory — use first product image as fallback if no dedicated swatch
+  "swatch":                   "image:0"
+  "item_weight":              "field:variant.weight"
+  # Returns: Standard | Hygiene | Nonrefundable
+  # Override per product_type in categoryMappings or set per-product via tags (tag:returns)
+  "returns":                  "default:returns"
+  # Size attributes — only one will be non-blank per product type
+  "size_womens":              "option:size"
+  "size_wtrousersjeans":      "option:size"
+  "size_lingerieswim":        "option:size"
 
 # ─── Offer field mappings ─────────────────────────────────────────────────────
+# Used for combined template (cols 164–181), prices template, and stock template
 offerFieldMappings:
-  "sku": "field:variant.sku"
-  "seller-product-id": "field:product.numericId"
-  "seller-article-id": "field:variant.numericId"
-  "product-id": "field:variant.barcode"
-  "product-id-type": "static:EAN"
-  "price": "field:variant.price"
-  "discount-price": "field:variant.compareAtPrice"
-  "quantity": "field:variant.inventoryQuantity"
-  "state-code": "default:state_code"
-  "state": "default:state_label"
-  "leadtime-to-ship": "default:leadtime_to_ship"
-  "currency-iso-code": "default:currency"
-  "update-delete": "default:update_delete"
-  "min-quantity-alert": "static:5"
-  "logistic-class": "default:logistic_class"
-  "min-order-quantity": "default:min_order_quantity"
-  "description": "field:product.description"
+  # Combined + prices template
+  "sku":                      "field:variant.sku"
+  "offer-sku":                "field:variant.sku"   # prices & stock templates use offer-sku
+  "product-id":               "field:variant.barcode"
+  "product-id-type":          "static:EAN"
+  "description":              "field:product.description"
+  "price":                    "field:variant.price"
+  "discount-price":           "field:variant.compareAtPrice"
+  "discount-start-date":      "static:"
+  "discount-end-date":        "static:"
+  # Stock template
+  "quantity":                 "field:variant.inventoryQuantity"
+  "warehouse-code":           "static:"
+  # Shared
+  "state":                    "default:state_label"
+  "leadtime-to-ship":         "default:leadtime_to_ship"
+  "update-delete":            "default:update_delete"
+  "min-quantity-alert":       "static:5"
+  "logistic-class":           "static:"

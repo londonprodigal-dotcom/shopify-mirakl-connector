@@ -66,6 +66,7 @@ export interface MappingConfig {
   defaults: Record<string, string | number>;
   categoryMappings: Record<string, string>;
   tagMappings: Record<string, Record<string, string>>;
+  colourFacetMappings: Record<string, string>;
   optionAliases: {
     color: string[];
     size: string[];
@@ -77,6 +78,12 @@ export interface MappingConfig {
 // ─── Template types ───────────────────────────────────────────────────────────
 
 export type TemplateType = 'products' | 'offers' | 'combined';
+
+export interface TemplateSet {
+  products: Template | null;
+  offers: Template | null;
+  combined: Template | null;
+}
 
 export interface Template {
   type: TemplateType;
