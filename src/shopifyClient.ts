@@ -1,5 +1,5 @@
 import { AppConfig } from './config';
-import { ShopifyProduct, ShopifyVariant, ShopifyImage } from './types';
+import { ShopifyProduct, ShopifyVariant, ShopifyImage, MiraklOrder } from './types';
 import { logger } from './logger';
 
 // ─── GraphQL query ────────────────────────────────────────────────────────────
@@ -175,10 +175,12 @@ function normaliseProduct(raw: GqlProductNode): ShopifyProduct {
 
 export class ShopifyClient {
   private readonly endpoint: string;
+  private readonly restBaseUrl: string;
   private readonly headers: Record<string, string>;
 
   constructor(config: AppConfig) {
-    this.endpoint = config.shopify.graphqlEndpoint;
+    this.endpoint    = config.shopify.graphqlEndpoint;
+    this.restBaseUrl = config.shopify.restBaseUrl;
     this.headers = {
       'Content-Type': 'application/json',
       'X-Shopify-Access-Token': config.shopify.adminAccessToken,
@@ -210,6 +212,118 @@ export class ShopifyClient {
     }
 
     return json as T;
+  }
+
+  // ─── REST helper ────────────────────────────────────────────────────────────
+
+  private async rest<T>(path: string, body: unknown): Promise<T> {
+    const response = await fetch(`${this.restBaseUrl}${path}`, {
+      method:  'POST',
+      headers: this.headers,
+      body:    JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Shopify REST ${response.status} ${path}: ${text.slice(0, 500)}`);
+    }
+    return response.json() as Promise<T>;
+  }
+
+  // ─── Inventory item → SKU lookup (for stock webhooks) ───────────────────────
+
+  async lookupSkuByInventoryItem(inventoryItemId: number): Promise<string | null> {
+    const gid = `gid://shopify/InventoryItem/${inventoryItemId}`;
+    const query = `
+      query LookupInventoryItem($id: ID!) {
+        inventoryItem(id: $id) { sku }
+      }
+    `;
+    const result = await this.gql<{ data?: { inventoryItem?: { sku: string } | null } }>(
+      query, { id: gid }
+    );
+    return result.data?.inventoryItem?.sku ?? null;
+  }
+
+  // ─── SKU → numeric variant ID lookup (for order creation) ──────────────────
+
+  async lookupVariantIdBySku(sku: string): Promise<string | null> {
+    const query = `
+      query LookupVariantBySku($q: String!) {
+        productVariants(first: 1, query: $q) {
+          edges { node { id sku } }
+        }
+      }
+    `;
+    const result = await this.gql<{
+      data?: { productVariants: { edges: Array<{ node: { id: string; sku: string } }> } };
+    }>(query, { q: `sku:${sku}` });
+    const edge = result.data?.productVariants.edges[0];
+    return edge ? numericId(edge.node.id) : null;
+  }
+
+  // ─── Create a Shopify order from a Mirakl sale ──────────────────────────────
+
+  async createOrderFromMirakl(order: MiraklOrder): Promise<{ id: number; name: string }> {
+    // Resolve all offer SKUs to Shopify numeric variant IDs
+    const lineItems = (
+      await Promise.all(
+        order.order_lines.map(async (line) => {
+          const variantId = await this.lookupVariantIdBySku(line.offer_sku);
+          if (!variantId) {
+            logger.warn('No variant found for SKU — skipping line', { sku: line.offer_sku });
+            return null;
+          }
+          return { variant_id: Number(variantId), quantity: line.quantity };
+        })
+      )
+    ).filter((l): l is { variant_id: number; quantity: number } => l !== null);
+
+    if (lineItems.length === 0) {
+      throw new Error(`No Shopify variants matched for Mirakl order ${order.order_id}`);
+    }
+
+    const addr = order.shipping_address;
+    const bill = order.billing_address;
+    const email = order.customer.email ?? addr.email ?? bill.email ?? '';
+
+    const payload = {
+      order: {
+        line_items:       lineItems,
+        email,
+        shipping_address: {
+          first_name: addr.firstname,
+          last_name:  addr.lastname,
+          address1:   addr.street_1,
+          address2:   addr.street_2 ?? '',
+          city:       addr.city,
+          zip:        addr.zip_code,
+          country_code: addr.country ?? addr.country_iso_code ?? 'GB',
+          phone:      addr.phone ?? '',
+        },
+        billing_address: {
+          first_name: bill.firstname,
+          last_name:  bill.lastname,
+          address1:   bill.street_1,
+          address2:   bill.street_2 ?? '',
+          city:       bill.city,
+          zip:        bill.zip_code,
+          country_code: bill.country ?? bill.country_iso_code ?? 'GB',
+          phone:      bill.phone ?? '',
+        },
+        financial_status:           'paid',
+        inventory_behaviour:        'decrement_ignoring_policy',
+        send_receipt:               false,
+        send_fulfillment_receipt:   false,
+        tags:   'mirakl,debenhams',
+        note:   `Mirakl order: ${order.order_id}`,
+      },
+    };
+
+    const result = await this.rest<{ order: { id: number; name: string } }>(
+      '/orders.json',
+      payload
+    );
+    return result.order;
   }
 
   /**

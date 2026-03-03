@@ -14,4 +14,6 @@ COPY mapping.yaml ./
 COPY templates/ ./templates/
 RUN echo "=== Template files in image ===" && ls -la /app/templates/ && echo "=== End template list ==="
 RUN mkdir -p /app/state /app/output /app/reports
-CMD ["node", "dist/index.js", "sync", "--incremental"]
+# Default: run the webhook server.
+# Railway cron services override this with: node dist/index.js sync --incremental
+CMD ["node", "dist/index.js", "server"]

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { runSync } from './commands/sync';
+import { loadConfig } from './config';
 import { logger } from './logger';
 
 const program = new Command();
@@ -41,6 +42,23 @@ program
       logger.error('Sync failed', {
         error: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack : undefined,
+      });
+      process.exit(1);
+    }
+  });
+
+program
+  .command('server')
+  .description('Start the webhook receiver HTTP server (Shopify inventory + Mirakl orders)')
+  .action(async () => {
+    try {
+      const config = loadConfig();
+      const { startServer } = await import('./server');
+      startServer(config);
+      // No process.exit — event loop keeps the server alive
+    } catch (err) {
+      logger.error('Server failed to start', {
+        error: err instanceof Error ? err.message : String(err),
       });
       process.exit(1);
     }

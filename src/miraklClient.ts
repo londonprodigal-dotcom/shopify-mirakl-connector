@@ -3,7 +3,7 @@ import * as path from 'path';
 import FormData from 'form-data';
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import { AppConfig } from './config';
-import { MiraklImportStatus } from './types';
+import { MiraklImportStatus, MiraklOrder } from './types';
 import { logger } from './logger';
 
 // Mirakl import status strings returned by the API
@@ -188,6 +188,47 @@ export class MiraklClient {
     fs.writeFileSync(outPath, data, 'utf8');
     logger.info('Error report saved', { path: outPath });
     return outPath;
+  }
+
+  // ─── Push a single-SKU stock update (used by inventory webhook) ────────────
+
+  /**
+   * Build a minimal OF01 CSV in memory and upload it immediately.
+   * No polling — fire-and-forget for webhook handlers.
+   */
+  async pushStockUpdate(sku: string, quantity: number): Promise<string | number> {
+    logger.info('Pushing stock update to Mirakl', { sku, quantity });
+
+    // Build a minimal two-row CSV (header + one data row) entirely in memory
+    const csvContent = `offer-sku\tquantity\tupdate-delete\r\n${sku}\t${quantity}\tU\r\n`;
+    const csvBuffer  = Buffer.from('\uFEFF' + csvContent, 'utf8');
+
+    const form = new FormData();
+    form.append('file', csvBuffer, {
+      filename:    `stock-${sku}-${Date.now()}.csv`,
+      contentType: 'text/csv',
+    });
+
+    const { data } = await this.http.post<{ import_id: string | number }>(
+      '/api/offers/imports',
+      form,
+      { headers: { ...form.getHeaders() }, params: this.shopParam() }
+    );
+
+    logger.info('Stock update accepted by Mirakl', { importId: data.import_id, sku });
+    return data.import_id;
+  }
+
+  // ─── Fetch a single Mirakl order by ID (OR11) ────────────────────────────
+
+  async getOrder(orderId: string): Promise<MiraklOrder> {
+    const { data } = await this.http.get<{ orders: MiraklOrder[] }>('/api/orders', {
+      params: { ...this.shopParam(), order_ids: orderId },
+    });
+
+    const order = data.orders?.[0];
+    if (!order) throw new Error(`Mirakl order not found: ${orderId}`);
+    return order;
   }
 
   // ─── Convenience: upload + wait + handle errors ────────────────────────────

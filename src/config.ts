@@ -28,6 +28,8 @@ export interface AppConfig {
     adminAccessToken: string;
     apiVersion: string;
     graphqlEndpoint: string;
+    restBaseUrl: string;     // https://<domain>/admin/api/<version>
+    webhookSecret: string;   // SHOPIFY_WEBHOOK_SECRET — signs incoming webhooks
   };
   mirakl: {
     baseUrl: string;
@@ -40,6 +42,9 @@ export interface AppConfig {
     state: string;
     reports: string;
     output: string;
+  };
+  server: {
+    port: number;
   };
 }
 
@@ -60,6 +65,8 @@ export function loadConfig(): AppConfig {
       adminAccessToken: requireEnv('SHOPIFY_ADMIN_ACCESS_TOKEN'),
       apiVersion,
       graphqlEndpoint: `https://${cleanDomain}/admin/api/${apiVersion}/graphql.json`,
+      restBaseUrl:     `https://${cleanDomain}/admin/api/${apiVersion}`,
+      webhookSecret:   optionalEnv('SHOPIFY_WEBHOOK_SECRET', '') ?? '',
     },
     mirakl: {
       baseUrl,
@@ -72,6 +79,9 @@ export function loadConfig(): AppConfig {
       state: path.join(root, 'state'),
       reports: path.join(root, 'reports'),
       output: path.join(root, 'output'),
+    },
+    server: {
+      port: parseInt(optionalEnv('PORT', '3000') ?? '3000', 10),
     },
   };
 }

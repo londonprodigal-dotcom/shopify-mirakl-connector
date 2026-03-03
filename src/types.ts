@@ -45,6 +45,54 @@ export interface ShopifyProduct {
 
 export type MiraklRow = Record<string, string | number | null | undefined>;
 
+// ─── Mirakl order types (OR11 response) ──────────────────────────────────────
+
+export interface MiraklOrderAddress {
+  firstname: string;
+  lastname: string;
+  street_1: string;
+  street_2?: string;
+  city: string;
+  zip_code: string;
+  country: string;      // ISO 2-letter e.g. "GB"
+  country_iso_code?: string;
+  phone?: string;
+  email?: string;
+}
+
+export interface MiraklOrderLine {
+  offer_sku: string;    // matches your Shopify variant SKU
+  quantity: number;
+  price: number;        // unit price
+  total_price: number;
+  title: string;
+  tax_amount?: number;
+  order_line_id?: string;
+  order_line_state?: string;
+}
+
+export interface MiraklOrder {
+  order_id: string;
+  status?: string;
+  order_state?: string;
+  customer: MiraklOrderAddress;
+  shipping_address: MiraklOrderAddress;
+  billing_address: MiraklOrderAddress;
+  order_lines: MiraklOrderLine[];
+  currency_iso_code: string;
+  created_date: string;
+  total_price?: number;
+}
+
+// ─── Shopify webhook payload types ───────────────────────────────────────────
+
+export interface ShopifyInventoryWebhookPayload {
+  inventory_item_id: number;
+  available: number;
+  location_id: number;
+  updated_at?: string;
+}
+
 export interface MiraklImportResponse {
   import_id: string | number;
 }
