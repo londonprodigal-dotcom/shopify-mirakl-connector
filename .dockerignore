@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+output/
+state/
+reports/
+*.log
+.git/
+.gitignore
+README.md
