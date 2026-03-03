@@ -2,7 +2,7 @@ node_modules/
 dist/
 .env
 output/
-state/
+/state/
 reports/*.log
 reports/*-errors.csv
 # Keep template placeholders but not actual templates (they may be proprietary)
