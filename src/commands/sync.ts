@@ -1,4 +1,4 @@
-import * as path from 'path';
+import * as crypto from 'crypto';
 import { loadConfig, loadMappingConfig } from '../config';
 import { ShopifyClient } from '../shopifyClient';
 import { MiraklClient } from '../miraklClient';
@@ -12,6 +12,8 @@ import { ShopifyProduct } from '../types';
 import { logger } from '../logger';
 
 // ─── Main sync orchestrator ───────────────────────────────────────────────────
+// Uploads PA01 (products) only. Generates and saves the OF01 CSV for later.
+// Use `check-import` to poll PA01 status and trigger OF01 upload.
 
 export async function runSync(options: SyncOptions): Promise<SyncResult> {
   const { dryRun, incremental, stockOnly, templatesPath } = options;
@@ -21,11 +23,10 @@ export async function runSync(options: SyncOptions): Promise<SyncResult> {
   logger.info('═══════════════════════════════════════════════════');
   logger.info('Mode', { dryRun, incremental, stockOnly });
 
-  // ─── 1. Load configuration ──────────────────────────────────────────────────
   const config  = loadConfig();
   const mapping = loadMappingConfig();
 
-  // ─── 2. Load Mirakl templates ───────────────────────────────────────────────
+  // ─── Load templates ────────────────────────────────────────────────────────
   const resolvedTemplatesPath =
     templatesPath ?? process.env.TEMPLATES_PATH ?? config.paths.templates;
 
@@ -39,9 +40,19 @@ export async function runSync(options: SyncOptions): Promise<SyncResult> {
     throw new Error(`No valid templates in: ${resolvedTemplatesPath}`);
   }
 
-  // ─── 3. State management ────────────────────────────────────────────────────
+  // ─── State ─────────────────────────────────────────────────────────────────
   const state   = new StateManager(config.paths.state);
   const current = state.read();
+
+  // Block if there's already a pending PA01 import
+  if (current.pendingProductImport) {
+    logger.error('A product import is already pending — run check-import first', {
+      importId: current.pendingProductImport.importId,
+      uploadedAt: current.pendingProductImport.uploadedAt,
+    });
+    throw new Error('Pending product import exists. Run check-import to resolve it before syncing again.');
+  }
+
   state.markRunStarted();
 
   let since: string | undefined;
@@ -49,10 +60,10 @@ export async function runSync(options: SyncOptions): Promise<SyncResult> {
     since = current.lastSuccessfulSync;
     logger.info('Incremental: fetching products updated since', { since });
   } else if (incremental) {
-    logger.warn('No previous sync found – running full sync');
+    logger.warn('No previous sync found — running full sync');
   }
 
-  // ─── 4. Fetch from Shopify ──────────────────────────────────────────────────
+  // ─── Fetch from Shopify ────────────────────────────────────────────────────
   const shopify  = new ShopifyClient(config);
   const products = await shopify.fetchAllProducts(since);
 
@@ -64,7 +75,27 @@ export async function runSync(options: SyncOptions): Promise<SyncResult> {
 
   logger.info(`Fetched ${products.length} products with ${products.reduce((n, p) => n + p.variants.length, 0)} total variants`);
 
-  // ─── 5. Map to Mirakl rows ──────────────────────────────────────────────────
+  // ─── Resolve headers ───────────────────────────────────────────────────────
+  let outputHeaders: string[];
+  if (isCombined && templates.combined) {
+    outputHeaders = templates.combined.headers;
+  } else if (templates.products) {
+    outputHeaders = templates.products.headers;
+  } else {
+    throw new Error('No product template headers available');
+  }
+
+  // Split combined headers into product vs offer columns
+  const skuIdx = outputHeaders.findIndex((h) => h.toLowerCase() === 'sku');
+  const productHeaders = skuIdx > 0 ? outputHeaders.slice(0, skuIdx) : outputHeaders;
+  const offerHeaders   = skuIdx > 0 ? outputHeaders.slice(skuIdx) : (templates.offers?.headers ?? []);
+
+  logger.info('Column split', {
+    productCols: productHeaders.length,
+    offerCols: offerHeaders.length,
+  });
+
+  // ─── Map products and compute hashes for incremental ───────────────────────
   const result: SyncResult = {
     totalProducts:    products.length,
     totalVariants:    products.reduce((n, p) => n + p.variants.length, 0),
@@ -75,175 +106,130 @@ export async function runSync(options: SyncOptions): Promise<SyncResult> {
     errors:           [],
   };
 
-  let outputRows: MiraklRow[] = [];
-  let outputHeaders: string[] = [];
+  const allProductRows: MiraklRow[] = [];
+  const allOfferRows:   MiraklRow[] = [];
+  const newHashes: Record<string, string> = {};
+  const oldHashes = current.productHashes ?? {};
+  let unchangedCount = 0;
 
-  if (isCombined && templates.combined) {
-    // ── Combined template: one row per variant with ALL 181 columns ───────────
-    outputHeaders = templates.combined.headers;
-    logger.info(`Mapping ${products.length} products to combined rows...`);
-    for (let i = 0; i < products.length; i++) {
-      const product = products[i]!;
-      try {
-        const rows = mapCombinedRows(product, outputHeaders, mapping, stockOnly);
-        outputRows.push(...rows);
-        result.productsExported += rows.length;
-        result.offersExported   += rows.length;
-        if (product.variants.every((v) => !v.sku)) result.skipped++;
-      } catch (err) {
-        result.failed++;
-        const reason = err instanceof Error ? err.message : String(err);
-        result.errors.push({ identifier: product.title, reason });
-        logger.error('Failed to map product', { title: product.title, error: reason });
+  logger.info(`Mapping ${products.length} products...`);
+  for (let i = 0; i < products.length; i++) {
+    const product = products[i]!;
+    try {
+      const pRows = mapProductToRows(product, productHeaders, mapping);
+      const oRows = offerHeaders.length > 0
+        ? mapOfferToRows(product, offerHeaders, mapping, stockOnly)
+        : [];
+
+      if (pRows.length === 0) {
+        result.skipped++;
+        continue;
       }
-      if ((i + 1) % 100 === 0) {
-        logger.info(`  Mapped ${i + 1}/${products.length} products (${outputRows.length} rows so far)...`);
+
+      // Hash the product rows to detect changes
+      const hash = hashRows(pRows);
+      newHashes[product.numericId] = hash;
+
+      if (oldHashes[product.numericId] === hash) {
+        unchangedCount++;
+        // Still include offer rows (price/stock can change independently)
+        allOfferRows.push(...oRows);
+        result.offersExported += oRows.length;
+        continue;
       }
+
+      allProductRows.push(...pRows);
+      allOfferRows.push(...oRows);
+      result.productsExported += pRows.length;
+      result.offersExported   += oRows.length;
+    } catch (err) {
+      result.failed++;
+      const reason = err instanceof Error ? err.message : String(err);
+      result.errors.push({ identifier: product.title, reason });
+      logger.error('Failed to map product', { title: product.title, error: reason });
     }
-    logger.info(`Mapping complete: ${outputRows.length} rows from ${products.length} products`);
-  } else {
-    // ── Separate product + offer templates ────────────────────────────────────
-    const productRows: MiraklRow[] = [];
-    const offerRows:   MiraklRow[] = [];
-
-    for (const product of products) {
-      try {
-        if (!stockOnly && templates.products) {
-          const pRows = mapProductToRows(product, templates.products.headers, mapping);
-          productRows.push(...pRows);
-          result.productsExported += pRows.length;
-        }
-        if (templates.offers) {
-          const oRows = mapOfferToRows(product, templates.offers.headers, mapping, stockOnly);
-          offerRows.push(...oRows);
-          result.offersExported += oRows.length;
-        }
-        if (product.variants.every((v) => !v.sku)) result.skipped++;
-      } catch (err) {
-        result.failed++;
-        const reason = err instanceof Error ? err.message : String(err);
-        result.errors.push({ identifier: product.title, reason });
-        logger.error('Failed to map product', { title: product.title, error: reason });
-      }
+    if ((i + 1) % 200 === 0) {
+      logger.info(`  Mapped ${i + 1}/${products.length}...`);
     }
-
-    // Write/upload separately
-    await handleSeparateExport(productRows, offerRows, templates, config, mapping, result, dryRun, stockOnly);
-    if (!dryRun && result.failed === 0) state.markSuccess();
-    printSummary(result, dryRun);
-    return result;
   }
 
-  // ─── 6. Export combined CSV ──────────────────────────────────────────────────
-  if (outputRows.length === 0) {
-    logger.info('No rows to export.');
-    state.markSuccess();
-    return result;
-  }
+  logger.info(`Mapping complete`, {
+    productRows: allProductRows.length,
+    offerRows: allOfferRows.length,
+    unchanged: unchangedCount,
+    changed: products.length - unchangedCount - result.skipped - result.failed,
+  });
 
-  let csvPath: string | null = null;
+  // ─── Dry run ───────────────────────────────────────────────────────────────
   if (dryRun) {
-    previewCsv(outputHeaders, outputRows, 'Combined Products+Offers');
-  } else {
-    csvPath = writeCsv(outputHeaders, outputRows, {
+    previewCsv(productHeaders, allProductRows, 'Products (PA01)');
+    if (offerHeaders.length > 0) previewCsv(offerHeaders, allOfferRows, 'Offers (OF01)');
+    printSummary(result, true);
+    return result;
+  }
+
+  // ─── Write offer CSV to disk (for later OF01 upload) ───────────────────────
+  let offersCsvPath: string | null = null;
+  if (offerHeaders.length > 0 && allOfferRows.length > 0) {
+    offersCsvPath = writeCsv(offerHeaders, allOfferRows, {
       outputDir: config.paths.output,
-      filename:  stockOnly ? 'import-stock' : 'import',
+      filename:  stockOnly ? 'offers-stock' : 'offers',
     });
+    logger.info('Offers CSV saved for later upload', { path: offersCsvPath, rows: allOfferRows.length });
   }
 
-  // ─── 7. Upload to Mirakl ────────────────────────────────────────────────────
-  if (!dryRun && csvPath) {
-    logger.info('Uploading combined import to Mirakl...');
-    const mirakl  = new MiraklClient(config);
-    // Combined Products+Offers imports go to the offers endpoint in Mirakl
-    const status  = await mirakl.importAndWait(csvPath, 'offers');
-    result.miraklImportId = status.import_id;
-    result.miraklStatus   = status.status;
-    logger.info('Import finished', {
-      status: status.status,
-      ok:     status.lines_in_success,
-      errors: status.lines_in_error,
-    });
-  }
-
-  // ─── 8. Update state ────────────────────────────────────────────────────────
-  if (!dryRun && result.failed === 0) {
+  // ─── Upload PA01 (products) ────────────────────────────────────────────────
+  if (allProductRows.length === 0 && !stockOnly) {
+    logger.info('All products unchanged — skipping PA01 upload');
+    // Still need to handle offers if stock-only or if products already exist
+    if (offersCsvPath) {
+      logger.info('Uploading offers directly (no product changes)...');
+      const mirakl = new MiraklClient(config);
+      const offerImportId = await mirakl.uploadOffersFile(offersCsvPath);
+      result.miraklImportId = offerImportId;
+      logger.info('Offers upload accepted', { importId: offerImportId });
+    }
+    // Save updated hashes
+    state.write({ ...state.read(), productHashes: { ...oldHashes, ...newHashes } });
     state.markSuccess();
-  } else if (!dryRun) {
-    logger.warn('State not updated — fix mapping errors and re-run.');
+    printSummary(result, false);
+    return result;
   }
 
-  printSummary(result, dryRun);
+  const productCsvPath = writeCsv(productHeaders, allProductRows, {
+    outputDir: config.paths.output,
+    filename:  'products',
+  });
+
+  const mirakl = new MiraklClient(config);
+  logger.info('Uploading products to Mirakl PA01...');
+  const productImportId = await mirakl.uploadProductsFile(productCsvPath);
+
+  // Save state: pending import + offers CSV path + updated hashes
+  state.write({
+    ...state.read(),
+    pendingProductImport: {
+      importId: productImportId,
+      offersCsvPath: offersCsvPath ?? '',
+      uploadedAt: new Date().toISOString(),
+    },
+    productHashes: { ...oldHashes, ...newHashes },
+  });
+
+  logger.info('PA01 upload accepted. Run check-import to monitor and trigger OF01.', {
+    importId: productImportId,
+  });
+
+  printSummary(result, false);
   return result;
 }
 
-// ─── Combined mapper ──────────────────────────────────────────────────────────
-// Merges product + offer fields into a single row per variant.
-
-function mapCombinedRows(
-  product: ShopifyProduct,
-  headers: string[],
-  mapping: MappingConfig,
-  stockOnly: boolean
-): MiraklRow[] {
-  // Get product rows (fill product columns) and offer rows (fill offer columns)
-  const pRows = mapProductToRows(product, headers, mapping);
-  const oRows = mapOfferToRows(product, headers, mapping, stockOnly);
-
-  // Both mappers return one row per variant in the same order — merge them
-  return pRows.map((pRow, i) => {
-    const oRow = oRows[i] ?? {};
-    const merged: MiraklRow = { ...pRow };
-    // Offer fields override blanks from product mapper
-    for (const [key, val] of Object.entries(oRow)) {
-      if (val !== null && val !== undefined && val !== '') {
-        merged[key] = val;
-      }
-    }
-    return merged;
-  });
-}
-
-// ─── Separate template export helper ─────────────────────────────────────────
-
-async function handleSeparateExport(
-  productRows: MiraklRow[],
-  offerRows: MiraklRow[],
-  templates: { products: { headers: string[] } | null; offers: { headers: string[] } | null },
-  config: ReturnType<typeof loadConfig>,
-  _mapping: MappingConfig,
-  result: SyncResult,
-  dryRun: boolean,
-  stockOnly: boolean
-): Promise<void> {
-  let productsCsvPath: string | null = null;
-  let offersCsvPath:   string | null = null;
-
-  if (!stockOnly && templates.products && productRows.length > 0) {
-    if (dryRun) previewCsv(templates.products.headers, productRows, 'Products');
-    else productsCsvPath = writeCsv(templates.products.headers, productRows, { outputDir: config.paths.output, filename: 'products' });
-  }
-  if (templates.offers && offerRows.length > 0) {
-    if (dryRun) previewCsv(templates.offers.headers, offerRows, stockOnly ? 'Offers (stock-only)' : 'Offers');
-    else offersCsvPath = writeCsv(templates.offers.headers, offerRows, { outputDir: config.paths.output, filename: stockOnly ? 'offers-stock' : 'offers' });
-  }
-
-  if (!dryRun) {
-    const mirakl = new MiraklClient(config);
-    if (productsCsvPath) {
-      const s = await mirakl.importAndWait(productsCsvPath, 'products');
-      result.miraklImportId = s.import_id;
-      result.miraklStatus   = s.status;
-    }
-    if (offersCsvPath) {
-      const s = await mirakl.importAndWait(offersCsvPath, 'offers');
-      result.miraklImportId = s.import_id;
-      result.miraklStatus   = s.status;
-    }
-  }
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function hashRows(rows: MiraklRow[]): string {
+  const content = rows.map((r) => JSON.stringify(r)).join('|');
+  return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+}
 
 function emptyResult(): SyncResult {
   return { totalProducts: 0, totalVariants: 0, productsExported: 0, offersExported: 0, skipped: 0, failed: 0, errors: [] };
@@ -253,20 +239,21 @@ function printSummary(result: SyncResult, dryRun: boolean): void {
   const mode = dryRun ? '[DRY RUN] ' : '';
   logger.info('');
   logger.info('═══════════════════════════════════════════════════');
-  logger.info(` ${mode}Reconciliation Summary`);
+  logger.info(` ${mode}Sync Summary`);
   logger.info('═══════════════════════════════════════════════════');
   logger.info(`  Products fetched  : ${result.totalProducts}`);
   logger.info(`  Variants fetched  : ${result.totalVariants}`);
-  logger.info(`  Rows exported     : ${result.productsExported}`);
+  logger.info(`  Product rows (PA01): ${result.productsExported}`);
+  logger.info(`  Offer rows (OF01)  : ${result.offersExported}`);
   logger.info(`  Skipped (no SKU)  : ${result.skipped}`);
   logger.info(`  Failed            : ${result.failed}`);
   if (result.miraklImportId) {
     logger.info(`  Mirakl import ID  : ${result.miraklImportId}`);
-    logger.info(`  Mirakl status     : ${result.miraklStatus}`);
   }
   if (result.errors.length > 0) {
     logger.info('  Errors:');
-    for (const e of result.errors) logger.info(`    - ${e.identifier}: ${e.reason}`);
+    for (const e of result.errors.slice(0, 10)) logger.info(`    - ${e.identifier}: ${e.reason}`);
+    if (result.errors.length > 10) logger.info(`    ... and ${result.errors.length - 10} more`);
   }
   logger.info('═══════════════════════════════════════════════════');
 }

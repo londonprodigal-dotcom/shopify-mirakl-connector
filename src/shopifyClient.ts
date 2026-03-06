@@ -42,8 +42,6 @@ const PRODUCTS_QUERY = `
                 price
                 compareAtPrice
                 barcode
-                weight
-                weightUnit
                 inventoryQuantity
                 selectedOptions {
                   name
@@ -71,8 +69,6 @@ interface GqlVariantNode {
   price: string;
   compareAtPrice: string | null;
   barcode: string | null;
-  weight: number;
-  weightUnit: string;
   inventoryQuantity: number;
   selectedOptions: Array<{ name: string; value: string }>;
   image: { url: string; altText: string | null } | null;
@@ -136,8 +132,8 @@ function normaliseVariant(raw: GqlVariantNode): ShopifyVariant {
     price: raw.price,
     compareAtPrice: raw.compareAtPrice ?? null,
     barcode: raw.barcode && raw.barcode.trim() !== '' ? raw.barcode.trim() : null,
-    weight: raw.weight ?? 0,
-    weightUnit: raw.weightUnit ?? 'KILOGRAMS',
+    weight: 0,
+    weightUnit: 'KILOGRAMS',
     inventoryQuantity: raw.inventoryQuantity ?? 0,
     selectedOptions: raw.selectedOptions ?? [],
     image: raw.image ?? null,

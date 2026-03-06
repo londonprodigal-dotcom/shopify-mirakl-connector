@@ -121,6 +121,8 @@ export interface MappingConfig {
   };
   productFieldMappings: Record<string, string>;
   offerFieldMappings: Record<string, string>;
+  /** Category-specific required attributes: category code → { attribute_code: value } */
+  categoryAttributes: Record<string, Record<string, string>>;
 }
 
 // ─── Template types ───────────────────────────────────────────────────────────
@@ -144,6 +146,13 @@ export interface Template {
 export interface SyncState {
   lastSuccessfulSync: string | null; // ISO 8601 timestamp
   lastRunAt: string | null;
+  pendingProductImport?: {
+    importId: string | number;
+    offersCsvPath: string;          // saved offers CSV to upload after PA01 completes
+    uploadedAt: string;             // ISO 8601
+  } | null;
+  /** SHA-256 hash of each product's mapped row content, keyed by Shopify product numericId */
+  productHashes?: Record<string, string>;
 }
 
 // ─── Sync options & result ────────────────────────────────────────────────────

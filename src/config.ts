@@ -107,6 +107,7 @@ export function loadMappingConfig(configPath?: string): MappingConfig {
   parsed.optionAliases = parsed.optionAliases ?? { color: ['Color'], size: ['Size'] };
   parsed.productFieldMappings = parsed.productFieldMappings ?? {};
   parsed.offerFieldMappings = parsed.offerFieldMappings ?? {};
+  parsed.categoryAttributes = parsed.categoryAttributes ?? {};
 
   return parsed;
 }

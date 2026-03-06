@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { runSync } from './commands/sync';
+import { runCheckImport } from './commands/checkImport';
 import { loadConfig } from './config';
 import { logger } from './logger';
 
@@ -40,6 +41,22 @@ program
       process.exit(0);
     } catch (err) {
       logger.error('Sync failed', {
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      process.exit(1);
+    }
+  });
+
+program
+  .command('check-import')
+  .description('Check pending PA01 product import status; upload OF01 offers if complete')
+  .action(async () => {
+    try {
+      await runCheckImport();
+      process.exit(0);
+    } catch (err) {
+      logger.error('Check-import failed', {
         error: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack : undefined,
       });

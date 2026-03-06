@@ -78,7 +78,7 @@ export class MiraklClient {
         headers: {
           ...form.getHeaders(),
         },
-        params: this.shopParam(),
+        params: { ...this.shopParam(), import_mode: 'NORMAL' },
       }
     );
 
@@ -118,6 +118,39 @@ export class MiraklClient {
     return importId;
   }
 
+  // ─── Check PA01 import status (single call, no polling) ────────────────────
+
+  async getProductImportStatus(importId: string | number): Promise<{
+    importStatus: string;
+    linesRead: number;
+    linesOk: number;
+    linesError: number;
+    hasTransformationErrorReport: boolean;
+    raw: any;
+  }> {
+    const { data } = await this.http.get(`/api/products/imports/${importId}`, {
+      params: this.shopParam(),
+    });
+    return {
+      importStatus: data.import_status ?? data.status ?? 'UNKNOWN',
+      linesRead:    data.transform_lines_read ?? data.lines_read ?? 0,
+      linesOk:      data.transform_lines_in_success ?? data.lines_in_success ?? 0,
+      linesError:   data.transform_lines_in_error ?? data.lines_in_error ?? 0,
+      hasTransformationErrorReport: data.has_transformation_error_report ?? false,
+      raw: data,
+    };
+  }
+
+  // ─── Fetch PA01 transformation error report ───────────────────────────────
+
+  async getTransformationErrorReport(importId: string | number): Promise<string> {
+    const { data } = await this.http.get<string>(
+      `/api/products/imports/${importId}/transformation_error_report`,
+      { params: this.shopParam(), responseType: 'text' }
+    );
+    return String(data);
+  }
+
   // ─── Poll for completion ────────────────────────────────────────────────────
 
   /**
@@ -137,14 +170,15 @@ export class MiraklClient {
         params: this.shopParam(),
       });
 
-      const status = (data.status as RawStatus) ?? 'WAITING';
+      // OF01 uses "status", PA01 uses "import_status"
+      const status = ((data as any).status ?? (data as any).import_status ?? 'WAITING') as RawStatus;
 
       logger.info('Import status', {
         importId,
         status,
-        linesRead: data.lines_read,
-        linesOk: data.lines_in_success,
-        linesError: data.lines_in_error,
+        linesRead: data.lines_read ?? (data as any).transform_lines_read,
+        linesOk: data.lines_in_success ?? (data as any).transform_lines_in_success,
+        linesError: data.lines_in_error ?? (data as any).transform_lines_in_error,
       });
 
       if (status === 'COMPLETE' || status === 'FAILED') {
@@ -169,7 +203,7 @@ export class MiraklClient {
     importId: string | number,
     endpoint: 'offers' | 'products'
   ): Promise<string> {
-    const url = `/api/${endpoint}/imports/${importId}/errors`;
+    const url = `/api/${endpoint}/imports/${importId}/error_report`;
     logger.info('Downloading error report', { importId, url });
 
     const { data } = await this.http.get<string>(url, {

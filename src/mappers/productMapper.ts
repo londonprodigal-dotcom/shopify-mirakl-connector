@@ -18,6 +18,14 @@ export function mapProductToRows(
     product.variants[0].title === 'Default Title';
 
   for (const variant of product.variants) {
+    if (!variant.barcode || !variant.barcode.trim()) {
+      logger.warn(
+        `Product "${product.title}" variant "${variant.title}" has no barcode (EAN required) — skipping`,
+        { productId: product.numericId, variantId: variant.numericId }
+      );
+      continue;
+    }
+
     if (!variant.sku && !variant.barcode) {
       logger.warn(
         `Product "${product.title}" variant "${variant.title}" has no SKU or barcode — skipping`,
@@ -45,6 +53,9 @@ export function mapProductToRows(
 
     // Enforce SellerProductId / SellerArticleId rules regardless of template mapping
     overrideIds(row, product, variant, isSingleVariant, templateHeaders);
+
+    // Apply category-specific required attributes (fill empty columns only)
+    applyCategoryAttributes(row, product, templateHeaders, mapping);
 
     rows.push(row);
   }
@@ -102,6 +113,42 @@ function overrideIds(
   }
   if (sellerArticleKey) {
     row[sellerArticleKey] = isSingleVariant ? product.numericId : variant.numericId;
+  }
+}
+
+/**
+ * Apply category-specific required attributes from mapping.categoryAttributes.
+ * Only fills columns that are currently empty or missing.
+ */
+function applyCategoryAttributes(
+  row: MiraklRow,
+  product: ShopifyProduct,
+  headers: string[],
+  mapping: MappingConfig
+): void {
+  // Determine which category this product was mapped to
+  const categoryHeader = headers.find(
+    (h) => normaliseHeaderKey(h) === 'product-category'
+  );
+  if (!categoryHeader) return;
+
+  const categoryCode = String(row[categoryHeader] ?? '');
+  if (!categoryCode) return;
+
+  const attrs = mapping.categoryAttributes[categoryCode];
+  if (!attrs) return;
+
+  for (const [attrCode, defaultValue] of Object.entries(attrs)) {
+    // Find matching header in template (normalised match)
+    const normAttr = normaliseHeaderKey(attrCode);
+    const header = headers.find((h) => normaliseHeaderKey(h) === normAttr);
+    if (!header) continue;
+
+    // Only fill if currently empty
+    const current = row[header];
+    if (current === undefined || current === null || current === '') {
+      row[header] = defaultValue;
+    }
   }
 }
 

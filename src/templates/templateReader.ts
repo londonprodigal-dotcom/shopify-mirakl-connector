@@ -40,7 +40,7 @@ function looksLikeDisplayRow(cells: string[]): boolean {
   const nonEmpty = cells.filter(Boolean);
   if (nonEmpty.length === 0) return false;
   const withSpaces = nonEmpty.filter(c => c.includes(' ')).length;
-  return withSpaces / nonEmpty.length > 0.4; // >40% of cells have spaces → display row
+  return withSpaces / nonEmpty.length > 0.15; // >15% of cells have spaces → display row
 }
 
 // ─── Header extraction ────────────────────────────────────────────────────────

@@ -52,11 +52,28 @@ export function resolveField(
     case 'colorfacet': {
       // Resolve colour option, then map to Debenhams Colour Facet value
       const colorVal = resolveOption(param, variant, mapping);
-      if (!colorVal) return null;
+      if (!colorVal) return 'Multi'; // fallback for products without colour option
       const str = String(colorVal);
       const facet = mapping.colourFacetMappings?.[str];
       if (!facet) return str; // pass through if not in map
       return facet;
+    }
+
+    case 'colorfacetlower': {
+      // Same as colorfacet but lowercased with underscores (for the 22-value colour list)
+      const colorVal2 = resolveOption(param, variant, mapping);
+      if (!colorVal2) return 'multi'; // fallback for products without colour option
+      const str2 = String(colorVal2);
+      const facet2 = mapping.colourFacetMappings?.[str2];
+      const result = facet2 || str2;
+      return result.toLowerCase().replace(/\s+/g, '_');
+    }
+
+    case 'sanitized': {
+      // Resolve a field value and strip banned marketplace words
+      const rawVal = resolveFieldPath(param, product, variant);
+      if (!rawVal) return null;
+      return sanitizeBannedWords(String(rawVal));
     }
 
     default:
@@ -112,7 +129,12 @@ function resolveOption(
 
   for (const option of variant.selectedOptions) {
     if (aliases.some((a) => a.toLowerCase() === option.name.toLowerCase())) {
-      return option.value;
+      const val = option.value;
+      // Mirakl size values must be lowercase (e.g. "s" not "S")
+      if (aliasGroup === 'size' && val) {
+        return val.toLowerCase();
+      }
+      return val;
     }
   }
   return null;
@@ -155,6 +177,23 @@ function resolveMapped(
 
   // Fallback
   return mapping.categoryMappings['_default'] ?? strValue;
+}
+
+// Debenhams blocks certain words in titles and descriptions
+const BANNED_WORDS = [
+  'sustainable', 'eco-friendly', 'eco friendly', 'eco', 'recycled',
+  'organic', 'lenzing', 'environmentally', 'chanel', 'chloe', 'alexa',
+];
+
+function sanitizeBannedWords(text: string): string {
+  let result = text;
+  for (const word of BANNED_WORDS) {
+    // Case-insensitive whole-word replacement
+    const regex = new RegExp(`\\b${word.replace(/-/g, '[-\\s]?')}\\b`, 'gi');
+    result = result.replace(regex, '');
+  }
+  // Clean up extra whitespace
+  return result.replace(/\s{2,}/g, ' ').trim();
 }
 
 function resolveTag(prefix: string, product: ShopifyProduct): FieldValue {

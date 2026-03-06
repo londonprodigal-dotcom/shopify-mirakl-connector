@@ -8,45 +8,160 @@ defaults:
   leadtime_to_ship: 3
   currency: "GBP"
   update_delete: "U"
-  gender: "Women"
+  gender: "female"
   # Returns: must be exactly one of: Standard | Hygiene | Nonrefundable
   # Hygiene = swimwear, lingerie, face masks, pierced jewellery, cosmetics
   # Nonrefundable = perishable/custom items
   # Standard = everything else
-  returns: "Standard"
+  returns: "standard"
 
 # ─── Shopify product_type → Mirakl product_category code ─────────────────────
+# Case-insensitive matching is done in fieldResolver.ts
 categoryMappings:
-  "Dresses": "FA_DRESSES"
-  "Tops": "FA_TOPS"
-  "Blouses": "FA_TOPS"
-  "T-Shirts": "FA_TOPS"
-  "Shirts": "FA_SHIRTS"
-  "Jumpers": "FA_KNITWEAR"
-  "Knitwear": "FA_KNITWEAR"
-  "Cardigans": "FA_KNITWEAR"
-  "Skirts": "FA_SKIRTS"
-  "Trousers": "FA_TROUSERS"
-  "Jeans": "FA_JEANS"
-  "Shorts": "FA_SHORTS"
-  "Coats": "FA_COATS"
-  "Jackets": "FA_COATS"
-  "Jumpsuits": "FA_JUMPSUITS"
-  "Playsuits": "FA_PLAYSUITS"
-  "Co-ords": "FA_COORDS"
-  "Swimwear": "FA_SWIMWEAR"
-  "Lingerie": "FA_LINGERIE"
-  "Nightwear": "FA_NIGHTWEAR"
-  "Loungewear": "FA_LOUNGEWEAR"
-  "Hoodies": "FA_HOODIESSWEATSHIRTS"
-  "Sweatshirts": "FA_HOODIESSWEATSHIRTS"
-  "Leggings": "FA_LEGGINGS"
-  "Joggers": "FA_JOGGERS"
-  "Shoes": "FA_SHOES"
-  "Bags": "FA_BAGS"
-  "Accessories": "FA_ACCESSORIES"
-  "Jewellery": "FA_JEWELLERY"
-  "_default": "FA_WOMENSWEAR"
+  # ── Dresses ──
+  "Dresses": "women-clothing-womens_dresses"
+  "Midi Dress": "women-clothing-womens_dresses"
+  "Mini Dress": "women-clothing-womens_dresses"
+  "Maxi Dress": "women-clothing-womens_dresses"
+  "DRESS": "women-clothing-womens_dresses"
+
+  # ── Tops ──
+  "Tops": "women-clothing-womens_tops"
+  "Top": "women-clothing-womens_tops"
+  "top": "women-clothing-womens_tops"
+
+  # ── Blouses & Shirts ──
+  "Blouses": "women-clothing-womens_shirts"
+  "Blouse": "women-clothing-womens_shirts"
+  "BLOUSE": "women-clothing-womens_shirts"
+  "Shirts": "women-clothing-womens_shirts"
+  "Shirt": "women-clothing-womens_shirts"
+
+  # ── T-Shirts ──
+  "T-Shirts": "women-clothing-womens_t-shirts"
+  "T-Shirt": "women-clothing-womens_t-shirts"
+
+  # ── Jumpers & Cardigans ──
+  "Jumpers": "women-clothing-womens_jumpers_and_cardigans"
+  "Jumper": "women-clothing-womens_jumpers_and_cardigans"
+  "Knitwear": "women-clothing-womens_jumpers_and_cardigans"
+  "Cardigans": "women-clothing-womens_jumpers_and_cardigans"
+  "Cardigan": "women-clothing-womens_jumpers_and_cardigans"
+  "Sweater": "women-clothing-womens_jumpers_and_cardigans"
+
+  # ── Skirts ──
+  "Skirts": "women-clothing-womens_skirts"
+  "Midi Skirt": "women-clothing-womens_skirts"
+  "Mini Skirt": "women-clothing-womens_skirts"
+  "Mini skirt": "women-clothing-womens_skirts"
+  "Maxi Skirt": "women-clothing-womens_skirts"
+
+  # ── Trousers ──
+  "Trousers": "women-clothing-womens_trousers"
+  "Trouser": "women-clothing-womens_trousers"
+  "TROUSERS": "women-clothing-womens_trousers"
+
+  # ── Jeans ──
+  "Jeans": "women-clothing-womens_jeans"
+
+  # ── Shorts ──
+  "Shorts": "women-clothing-womens_shorts"
+
+  # ── Coats & Jackets ──
+  "Coats": "women-clothing-womens_jackets_and_coats"
+  "Coat": "women-clothing-womens_jackets_and_coats"
+  "COAT": "women-clothing-womens_jackets_and_coats"
+  "Jackets": "women-clothing-womens_jackets_and_coats"
+  "Jacket": "women-clothing-womens_jackets_and_coats"
+  "Outerwear": "women-clothing-womens_jackets_and_coats"
+  "Waistcoats": "women-clothing-womens_jackets_and_coats"
+  "Waistcoat": "women-clothing-womens_jackets_and_coats"
+  "Kimono": "women-clothing-womens_jackets_and_coats"
+
+  # ── Jumpsuits & Playsuits & Dungarees ──
+  "Jumpsuits": "women-clothing-womens_jumpsuits"
+  "Jumpsuit": "women-clothing-womens_jumpsuits"
+  "Jumpsuits & Playsuits": "women-clothing-womens_jumpsuits"
+  "Dungarees": "women-clothing-womens_jumpsuits"
+  "Playsuits": "women-clothing-womens_playsuits"
+  "Playsuit": "women-clothing-womens_playsuits"
+
+  # ── Co-ords ──
+  "Co-ords": "women-clothing-womens_co-ords"
+
+  # ── Swimwear, Lingerie, Night/Loungewear ──
+  "Swimwear": "women-clothing-womens_swimwear"
+  "Lingerie": "women-clothing-womens_lingerie"
+  "Nightwear": "women-clothing-womens_nightwear"
+  "Loungewear": "women-clothing-womens_loungewear"
+
+  # ── Hoodies & Sweatshirts ──
+  "Hoodies": "women-clothing-womens_hoodies_and_sweatshirts"
+  "Sweatshirts": "women-clothing-womens_hoodies_and_sweatshirts"
+  "Sweatshirt": "women-clothing-womens_hoodies_and_sweatshirts"
+  "SWEATSHIRT": "women-clothing-womens_hoodies_and_sweatshirts"
+
+  # ── Leggings & Joggers ──
+  "Leggings": "women-clothing-womens_leggings"
+  "Joggers": "women-clothing-womens_joggers"
+
+  # ── Footwear ──
+  "Shoes": "women-footwear-womens_flats"
+
+  # ── Bags & Purses ──
+  "Bags": "women-accessories-womens_bags_and_purses"
+  "Bags & Purses": "women-accessories-womens_bags_and_purses"
+  "Shoulder bag": "women-accessories-womens_bags_and_purses"
+  "Crossbody Bag": "women-accessories-womens_bags_and_purses"
+  "Backpack": "women-accessories-womens_bags_and_purses"
+  "Tote Bag": "women-accessories-womens_bags_and_purses"
+  "Purse": "women-accessories-womens_bags_and_purses"
+  "Purses": "women-accessories-womens_bags_and_purses"
+  "Makeup Bag": "women-accessories-womens_bags_and_purses"
+  "Passport Holder": "women-accessories-womens_bags_and_purses"
+  "PassportHolder": "women-accessories-womens_bags_and_purses"
+  "Card Holder": "women-accessories-womens_bags_and_purses"
+  "Keyring": "women-accessories-womens_bags_and_purses"
+  "Key Ring": "women-accessories-womens_bags_and_purses"
+
+  # ── Jewellery ──
+  "Jewellery": "women-accessories-womens_jewellery"
+  "Earrings": "women-accessories-womens_jewellery"
+  "Bracelet": "women-accessories-womens_jewellery"
+  "bracelet": "women-accessories-womens_jewellery"
+  "Ring": "women-accessories-womens_jewellery"
+  "Brooch": "women-accessories-womens_jewellery"
+
+  # ── Belts ──
+  "Belts": "women-accessories-womens_belts"
+
+  # ── Sunglasses ──
+  "Sunglasses": "women-accessories-womens_sunglasses"
+
+  # ── Hats ──
+  "Hats": "women-accessories-womens_hats"
+  "Beanie": "women-accessories-womens_hats"
+  "Beret": "women-accessories-womens_hats"
+  "Straw Hat": "women-accessories-womens_hats"
+
+  # ── Gloves & Scarves ──
+  "Gloves": "women-accessories-womens_gloves_and_scarves"
+  "gloves": "women-accessories-womens_gloves_and_scarves"
+  "Scarves": "women-accessories-womens_gloves_and_scarves"
+
+  # ── Hair Accessories ──
+  "Headband": "women-accessories-womens_hair_accessories"
+  "Hair Clip": "women-accessories-womens_hair_accessories"
+
+  # ── Umbrellas (no value lists exist for umbrella category — map to bags) ──
+  "Umbrella": "women-accessories-womens_bags_and_purses"
+
+  # ── Catch-all for generic types ──
+  "Accessories": "women-accessories-womens_bags_and_purses"
+  "Womenswear": "women-clothing-womens_dresses"
+
+  # Default must be a LEAF category — use dresses as safest catch-all
+  "_default": "women-clothing-womens_dresses"
 
 tagMappings: {}
 
@@ -141,6 +256,72 @@ colourFacetMappings:
   "Metallics": "Metallics"
   # Multi
   "Multi": "Multi"
+  "Multicolour": "Multi"
+  "Multi Colour": "Multi"
+  "multicolour": "Multi"
+  # Multi-colour combinations → Multi
+  "Black/White": "Multi"
+  "Green/White": "Multi"
+  "Blue/White": "Multi"
+  "Red/White": "Multi"
+  "Green/Pink": "Multi"
+  "Red/Black": "Multi"
+  "Black/Teal": "Multi"
+  "Chocolate/Turquoise": "Multi"
+  "Red/Navy": "Multi"
+  "Blue/Green": "Multi"
+  "Black/Pink": "Multi"
+  "Navy/Cream": "Multi"
+  "Black/Cream": "Multi"
+  "Gold/Pearl": "Multi"
+  "Navy/White": "Multi"
+  "Green/Black": "Multi"
+  "Blue/Pink": "Multi"
+  "Black/Grey": "Multi"
+  "White/Blue/Pink": "Multi"
+  "Black/Cream/Red": "Multi"
+  "Black/Red/Off White": "Multi"
+  "Navy/Red": "Multi"
+  "Navy/Green": "Multi"
+  "Green /Black": "Multi"
+  "Lilac/White": "Multi"
+  "Blue & White": "Multi"
+  "Yellow/White": "Multi"
+  "Navy/Black": "Multi"
+  "Pink/Yellow": "Multi"
+  "Black/Gold": "Multi"
+  "White/Gold": "Multi"
+  "Red/Gold": "Multi"
+  "Natural/Yellow": "Multi"
+  "Gold/Pink": "Multi"
+  "Navy/White/Pink": "Multi"
+  "Navy/Pink/Off White": "Multi"
+  "Beige /Black": "Multi"
+  "Red/Pink/Yellow": "Multi"
+  "Green/Gold": "Multi"
+  "Gold/Black": "Multi"
+  "Gold/Blue": "Multi"
+  "Ecru/Mustard": "Multi"
+  "Black & White": "Multi"
+  "Navy/Off White/Turquoise": "Multi"
+  # Mole / misc browns
+  "Mole": "Brown"
+  "Nutmeg": "Brown"
+  "Ginger": "Orange"
+  # Hot colours
+  "Hot Pink": "Pink"
+  "Mint Green": "Green"
+  "Pistachio": "Green"
+  # Case variants
+  "NAVY": "Blue"
+  "BLUE": "Blue"
+  "GREEN": "Green"
+  "red": "Red"
+  # Misc
+  "Tortoiseshell": "Brown"
+  "Pearl": "White"
+  "Burgandy": "Red"
+  "n/a": "Multi"
   # Nude
   "Nude": "Nude"
   # Orange
@@ -206,9 +387,13 @@ productFieldMappings:
   "parent_product_id":        "field:product.numericId"
   "product_id":               "field:variant.numericId"
   "ean":                      "field:variant.barcode"
-  "product_title":            "field:product.title"
-  "long_description":         "field:product.description"
-  "colour":                   "option:color"
+  "collection":               "static:louche"
+  "product_title":            "sanitized:product.title"
+  "long_description":         "sanitized:product.description"
+  "details_and_care":         "sanitized:product.description"
+  # colour = 22-value base colour list (lowercase): beige, black, blue, etc.
+  "colour":                   "colorfacetlower:color"
+  # colourfacet = 123-value detailed shade list: Baby Blue, Camel, Navy, etc.
   "colourfacet":              "colorfacet:color"
   "gender":                   "default:gender"
   "main_image":               "image:0"
@@ -224,7 +409,7 @@ productFieldMappings:
   # Returns: Standard | Hygiene | Nonrefundable
   # Override per product_type in categoryMappings or set per-product via tags (tag:returns)
   "returns":                  "default:returns"
-  # Size attributes — only one will be non-blank per product type
+  # Size attributes — populated by category-specific defaults below
   "size_womens":              "option:size"
   "size_wtrousersjeans":      "option:size"
   "size_lingerieswim":        "option:size"
@@ -251,3 +436,179 @@ offerFieldMappings:
   "update-delete":            "default:update_delete"
   "min-quantity-alert":       "static:5"
   "logistic-class":           "static:"
+
+# ─── Category-specific required attributes ────────────────────────────────────
+# Each Debenhams leaf category requires certain attributes.
+# These are applied after the main field mapping — only fills empty columns.
+categoryAttributes:
+  "women-clothing-womens_dresses":
+    category2_dresses: "dresses"
+    sleeve_length: "short_sleeve"
+    style_womensdresses: "dress"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_tops":
+    category2_tops: "tops"
+    sleeve_length: "short_sleeve"
+    style_womenstops: "blouse"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_shirts":
+    category2_shirts: "shirts"
+    sleeve_length: "long_sleeve"
+    style_womensshirts: "shirt"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_t-shirts":
+    category2_t-shirts: "t-shirts"
+    sleeve_length: "short_sleeve"
+    style_womenstshirts: "basic_t-shirt"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_skirts":
+    category2_skirts: "skirts"
+    style_skirts: "skirt"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_trousers":
+    category2_trousers: "trousers"
+    style_womenstrousers: "trousers"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_jeans":
+    category2_trousers: "trousers"
+    style_womenstrousers: "trousers"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_shorts":
+    category2_shorts: "shorts"
+    style_womensshorts: "shorts"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_jackets_and_coats":
+    category2_jacketscoats: "jackets_&_coats"
+    sleeve_length: "long_sleeve"
+    style_womensjacketscoats: "casual_jacket"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_jumpers_and_cardigans":
+    category2_jumperscardigans: "jumpers_&_cardigans"
+    sleeve_length: "long_sleeve"
+    style_womensjumperscardigans: "jumper"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_jumpsuits":
+    category2_jumpsuits: "jumpsuits"
+    sleeve_length: "sleeveless"
+    style_womensjumpsuits: "jumpsuit"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_playsuits":
+    category2_playsuits: "playsuits"
+    sleeve_length: "short_sleeve"
+    style_womensplaysuits: "playsuit"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_co-ords":
+    category2_co-ords: "co-ords"
+    sleeve_length: "short_sleeve"
+    style_womenscoords: "fashion_co-ord"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_hoodies_and_sweatshirts":
+    category2_hoodiessweatshirts: "hoodies_&_sweatshirts"
+    sleeve_length: "long_sleeve"
+    style_hoodiessweatshirts: "basic_sweatshirt"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_swimwear":
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "beachwear"
+
+  "women-clothing-womens_lingerie":
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_nightwear":
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_loungewear":
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "loungewear"
+
+  "women-clothing-womens_leggings":
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-clothing-womens_joggers":
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "leisurewear"
+
+  # ── Accessories ──
+
+  "women-accessories-womens_bags_and_purses":
+    category2_bagspurses: "bags_&_purses"
+    style_womensbagspurses: "bag"
+    size_onesize: "one_size"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-accessories-womens_jewellery":
+    category2_jewellery: "jewellery"
+    style_womensjewellery: "earrings"
+    size_jewellery: "one_size"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-accessories-womens_belts":
+    category2_belts: "belts"
+    style_womensbelts: "belt"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-accessories-womens_sunglasses":
+    category2_sunglasses: "sunglasses"
+    style_sunglasses: "sunglasses"
+    size_onesize: "one_size"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-accessories-womens_hats":
+    category2_hats: "hats"
+    style_womenshats: "hat"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-accessories-womens_gloves_and_scarves":
+    category2_glovesscarves: "gloves_&_scarves"
+    style_glovesscarves: "gloves"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  "women-accessories-womens_hair_accessories":
+    category2_hairaccessories: "hair_accessories"
+    style_womenshairaccessories: "hair_accessories"
+    size_onesize: "one_size"
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
+
+  # ── Footwear ──
+
+  "women-footwear-womens_flats":
+    range_womensclothingacc: "main"
+    occasion_womensclothingacc: "casual"
