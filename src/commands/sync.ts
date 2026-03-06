@@ -174,6 +174,7 @@ export async function runSync(options: SyncOptions): Promise<SyncResult> {
     offersCsvPath = writeCsv(offerHeaders, allOfferRows, {
       outputDir: config.paths.output,
       filename:  stockOnly ? 'offers-stock' : 'offers',
+      delimiter: ';',
     });
     logger.info('Offers CSV saved for later upload', { path: offersCsvPath, rows: allOfferRows.length });
   }
@@ -199,6 +200,7 @@ export async function runSync(options: SyncOptions): Promise<SyncResult> {
   const productCsvPath = writeCsv(productHeaders, allProductRows, {
     outputDir: config.paths.output,
     filename:  'products',
+    delimiter: ';',
   });
 
   const mirakl = new MiraklClient(config);

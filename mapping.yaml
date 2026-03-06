@@ -304,6 +304,7 @@ colourFacetMappings:
   "Ecru/Mustard": "Multi"
   "Black & White": "Multi"
   "Navy/Off White/Turquoise": "Multi"
+  "Brown/White": "Multi"
   # Mole / misc browns
   "Mole": "Brown"
   "Nutmeg": "Brown"
@@ -391,10 +392,10 @@ productFieldMappings:
   "product_title":            "sanitized:product.title"
   "long_description":         "sanitized:product.description"
   "details_and_care":         "sanitized:product.description"
-  # colour = 22-value base colour list (lowercase): beige, black, blue, etc.
-  "colour":                   "colorfacetlower:color"
-  # colourfacet = 123-value detailed shade list: Baby Blue, Camel, Navy, etc.
-  "colourfacet":              "colorfacet:color"
+  # colour attribute uses colourfacet value list (123 detailed shades: Baby Blue, Navy, Multi, etc.)
+  "colour":                   "colorfacet:color"
+  # colourfacet attribute uses colour value list (22 base colours, lowercase: beige, black, blue, etc.)
+  "colourfacet":              "colorfacetlower:color"
   "gender":                   "default:gender"
   "main_image":               "image:0"
   # Debenhams supports main + 5 additional images (per guidelines)
