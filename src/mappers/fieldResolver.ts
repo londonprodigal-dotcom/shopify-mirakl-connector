@@ -137,6 +137,8 @@ function resolveOption(
       return val;
     }
   }
+  // Products without a size option are one-size items
+  if (aliasGroup === 'size') return 'one_size';
   return null;
 }
 
