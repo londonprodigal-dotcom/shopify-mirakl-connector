@@ -132,7 +132,7 @@ function resolveOption(
       const val = option.value;
       // Mirakl size values must be lowercase (e.g. "s" not "S")
       if (aliasGroup === 'size' && val) {
-        return val.toLowerCase();
+        return normaliseSizeValue(val);
       }
       return val;
     }
@@ -196,6 +196,40 @@ function sanitizeBannedWords(text: string): string {
   }
   // Clean up extra whitespace
   return result.replace(/\s{2,}/g, ' ').trim();
+}
+
+// Valid Mirakl size_womens values (from Debenhams value list)
+const VALID_SIZES = new Set([
+  '10','10-11','10-12','10-12r','10-12s','10-14','10.5-11','11-12','11-12.5','11-13',
+  '12','12-14','12.5-5.5','14','14-16','14-16r','14-16s','14-18','14-20','1.5-3',
+  '16','16-18','16-20','18','18-20','18-20r','18-20s','18-22','2','20','20-22',
+  '20-24','22','22-24','22-24r','22-24s','22-26','22-28','2-3.5','24','24-26',
+  '2-5','2.5-3.5','2.5-4','2.5-4.5','2.5-5','2.5-6','2.5-6.5','26','26-28',
+  '28','28-30','28-32','3','30','30-32','32','32-34','32dd','32e','32g','34',
+  '3-4','34-36','3-4.5','3-5','3-5.5','3.5-5','3.5-5.5','3.5-7','3.5-7.5',
+  '3.5-8','36','3-6','3-6.5','3-7','38','3-8','38-40','3-8.5','3-9','4','40',
+  '4-11','42','42-44','44','4-5','4.5-5.5','4.5-6','46','4-6','46-48','4-6.5',
+  '4-7','48','4-8','4-9','4xl','5','50','50-52','52','54','54-56','5.5-6.5',
+  '5.5-7','56','5-6','5-8','5xl','6','6.5-8','6-7','6-8','6.8-5','6-9','6xl',
+  '7','7-11','7.5-8.5','7-8','7-9','7xl','8','8-10','8-11','8.5-10','8xl',
+  '9','9-10','l','l/xl','m','m/l','one_size','s','s/m','s-m','xl','xl/xxl',
+  'xs','xs/s','xxl','xxl/xxxl','xxs','xxs/xs','xxxl','xxxs',
+  '10s','10r','10l','10xl','12r','12s','12l','12xl','14r','14s','14l','14xl',
+  '16r','16s','16l','16xl','18r','18s','18l','18xl','20r','20s','20l','20xl',
+  '22r','22s','22l','22xl','24r','24s','24l','24xl','2xl','3xl',
+  '8r','8s','8l','1x','2x','3x','4x','m_tall','yl','ym','ys','yxl','yxs',
+]);
+
+function normaliseSizeValue(val: string): string {
+  let normalised = val.toLowerCase().trim();
+  // "One Size" / "one size" → one_size
+  if (normalised === 'one size' || normalised === 'onesize') return 'one_size';
+  // "Default Title" → one_size
+  if (normalised === 'default title') return 'one_size';
+  // If the value is a valid Mirakl size, use it
+  if (VALID_SIZES.has(normalised)) return normalised;
+  // Otherwise fall back to one_size (e.g. letter initials, colour names used as size)
+  return 'one_size';
 }
 
 function resolveTag(prefix: string, product: ShopifyProduct): FieldValue {
