@@ -116,7 +116,7 @@ export async function runSync(options: SyncOptions): Promise<SyncResult> {
   for (let i = 0; i < products.length; i++) {
     const product = products[i]!;
     try {
-      const pRows = mapProductToRows(product, productHeaders, mapping);
+      const pRows = mapProductToRows(product, productHeaders, mapping, config.imageProxyBaseUrl);
       const oRows = offerHeaders.length > 0
         ? mapOfferToRows(product, offerHeaders, mapping, stockOnly)
         : [];

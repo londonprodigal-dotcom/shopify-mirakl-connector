@@ -113,6 +113,24 @@ function stripHtml(html: string): string {
     .trim();
 }
 
+// ─── Helper: fix scientific notation barcodes ────────────────────────────────
+
+function normaliseBarcode(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let bc = raw.trim();
+  if (bc === '') return null;
+  // Scientific notation means the real digits are lost — treat as no barcode
+  if (bc.includes('E+') || bc.includes('e+')) {
+    return null;
+  }
+  // Must contain only digits and be a valid length (EAN-8, UPC-12, EAN-13)
+  if (/^\d{8}$|^\d{12}$|^\d{13}$/.test(bc)) {
+    return bc;
+  }
+  // Anything else (decimals, wrong length, text) — treat as no barcode
+  return null;
+}
+
 // ─── Helper: extract numeric ID from GID ─────────────────────────────────────
 
 function numericId(gid: string): string {
@@ -131,7 +149,7 @@ function normaliseVariant(raw: GqlVariantNode): ShopifyVariant {
     title: raw.title,
     price: raw.price,
     compareAtPrice: raw.compareAtPrice ?? null,
-    barcode: raw.barcode && raw.barcode.trim() !== '' ? raw.barcode.trim() : null,
+    barcode: normaliseBarcode(raw.barcode),
     weight: 0,
     weightUnit: 'KILOGRAMS',
     inventoryQuantity: raw.inventoryQuantity ?? 0,
@@ -320,6 +338,42 @@ export class ShopifyClient {
       payload
     );
     return result.order;
+  }
+
+  /**
+   * Bulk-update variant barcodes for a single product.
+   * Uses productVariantsBulkUpdate (productVariantUpdate was removed in 2024-01+).
+   * @param productGid  The product's GraphQL ID (gid://shopify/Product/...)
+   * @param updates     Array of { variantGid, barcode } pairs
+   */
+  async updateVariantBarcodes(
+    productGid: string,
+    updates: Array<{ variantGid: string; barcode: string }>
+  ): Promise<void> {
+    const mutation = `
+      mutation UpdateVariantBarcodes($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+        productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+          productVariants { id barcode }
+          userErrors { field message }
+        }
+      }
+    `;
+    const result = await this.gql<{
+      data?: {
+        productVariantsBulkUpdate: {
+          productVariants: Array<{ id: string; barcode: string }> | null;
+          userErrors: Array<{ field: string[]; message: string }>;
+        };
+      };
+    }>(mutation, {
+      productId: productGid,
+      variants: updates.map(u => ({ id: u.variantGid, barcode: u.barcode })),
+    });
+
+    const errors = result.data?.productVariantsBulkUpdate?.userErrors;
+    if (errors && errors.length > 0) {
+      throw new Error(errors.map(e => e.message).join('; '));
+    }
   }
 
   /**

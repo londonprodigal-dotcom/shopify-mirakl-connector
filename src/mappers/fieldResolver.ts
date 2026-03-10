@@ -50,9 +50,9 @@ export function resolveField(
       return resolveTag(param, product);
 
     case 'colorfacet': {
-      // Resolve colour option, then map to Debenhams Colour Facet value
-      const colorVal = resolveOption(param, variant, mapping);
-      if (!colorVal) return 'Multi'; // fallback for products without colour option
+      // Resolve colour option first, then fall back to title extraction
+      const colorVal = resolveOption(param, variant, mapping) ?? extractColourFromTitle(product.title, mapping);
+      if (!colorVal) return 'Multi'; // fallback for products without colour option or title
       const str = String(colorVal);
       const facet = mapping.colourFacetMappings?.[str];
       if (!facet) return str; // pass through if not in map
@@ -61,8 +61,8 @@ export function resolveField(
 
     case 'colorfacetlower': {
       // Same as colorfacet but lowercased with underscores (for the 22-value colour list)
-      const colorVal2 = resolveOption(param, variant, mapping);
-      if (!colorVal2) return 'multi'; // fallback for products without colour option
+      const colorVal2 = resolveOption(param, variant, mapping) ?? extractColourFromTitle(product.title, mapping);
+      if (!colorVal2) return 'multi'; // fallback for products without colour option or title
       const str2 = String(colorVal2);
       const facet2 = mapping.colourFacetMappings?.[str2];
       const result = facet2 || str2;
@@ -185,6 +185,7 @@ function resolveMapped(
 const BANNED_WORDS = [
   'sustainable', 'eco-friendly', 'eco friendly', 'eco', 'recycled',
   'organic', 'lenzing', 'environmentally', 'chanel', 'chloe', 'alexa',
+  'courtney',
 ];
 
 function sanitizeBannedWords(text: string): string {
@@ -230,6 +231,33 @@ function normaliseSizeValue(val: string): string {
   if (VALID_SIZES.has(normalised)) return normalised;
   // Otherwise fall back to one_size (e.g. letter initials, colour names used as size)
   return 'one_size';
+}
+
+/**
+ * Extract colour from product title using the "Product Name - Colour" pattern.
+ * Tries exact match first, then case-insensitive match against colourFacetMappings.
+ * Returns the matched colour string (as-is from the title), or null if no match.
+ */
+function extractColourFromTitle(title: string, mapping: MappingConfig): string | null {
+  // Try splitting on " - " and taking the last segment
+  const dashIdx = title.lastIndexOf(' - ');
+  if (dashIdx === -1) return null;
+
+  const candidate = title.slice(dashIdx + 3).trim();
+  if (!candidate) return null;
+
+  // Check if the candidate (or part of it) matches a known colour in the facet mappings
+  if (mapping.colourFacetMappings?.[candidate]) return candidate;
+
+  // Try case-insensitive match
+  const lower = candidate.toLowerCase();
+  for (const key of Object.keys(mapping.colourFacetMappings ?? {})) {
+    if (key.toLowerCase() === lower) return key;
+  }
+
+  // The candidate might be a colour not in the mapping — return it raw
+  // so the colorfacet resolver can pass it through
+  return candidate;
 }
 
 function resolveTag(prefix: string, product: ShopifyProduct): FieldValue {

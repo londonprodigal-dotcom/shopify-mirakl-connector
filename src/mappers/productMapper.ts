@@ -8,7 +8,8 @@ import { logger } from '../logger';
 export function mapProductToRows(
   product: ShopifyProduct,
   templateHeaders: string[],
-  mapping: MappingConfig
+  mapping: MappingConfig,
+  imageProxyBaseUrl?: string
 ): MiraklRow[] {
   const rows: MiraklRow[] = [];
 
@@ -56,6 +57,11 @@ export function mapProductToRows(
 
     // Apply category-specific required attributes (fill empty columns only)
     applyCategoryAttributes(row, product, templateHeaders, mapping);
+
+    // Rewrite Shopify CDN image URLs to proxy for DPI compliance
+    if (imageProxyBaseUrl) {
+      rewriteImageUrls(row, imageProxyBaseUrl);
+    }
 
     rows.push(row);
   }
@@ -148,6 +154,20 @@ function applyCategoryAttributes(
     const current = row[header];
     if (current === undefined || current === null || current === '') {
       row[header] = defaultValue;
+    }
+  }
+}
+
+/**
+ * Rewrite Shopify CDN image URLs to go through the DPI-fixing proxy.
+ * Only rewrites values that look like Shopify CDN image URLs.
+ */
+function rewriteImageUrls(row: MiraklRow, proxyBaseUrl: string): void {
+  const base = proxyBaseUrl.replace(/\/$/, '');
+  for (const key of Object.keys(row)) {
+    const val = row[key];
+    if (typeof val === 'string' && val.startsWith('https://cdn.shopify.com/')) {
+      row[key] = `${base}/img?url=${encodeURIComponent(val)}`;
     }
   }
 }

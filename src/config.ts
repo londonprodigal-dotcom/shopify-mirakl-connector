@@ -46,6 +46,8 @@ export interface AppConfig {
   server: {
     port: number;
   };
+  /** Base URL for the image proxy (e.g. https://connector.up.railway.app). When set, image URLs are rewritten to go through /img?url= proxy for DPI compliance. */
+  imageProxyBaseUrl: string | undefined;
 }
 
 export function loadConfig(): AppConfig {
@@ -83,6 +85,7 @@ export function loadConfig(): AppConfig {
     server: {
       port: parseInt(optionalEnv('PORT', '3000') ?? '3000', 10),
     },
+    imageProxyBaseUrl: optionalEnv('IMAGE_PROXY_BASE_URL'),
   };
 }
 

@@ -204,6 +204,7 @@ colourFacetMappings:
   "Dark Blue": "Blue"
   "Dark Indigo": "Blue"
   "Dark Navy": "Blue"
+  "Duck Egg": "Blue"
   "Duck Egg Blue": "Blue"
   "Indigo": "Blue"
   "Light Blue": "Blue"
@@ -224,6 +225,7 @@ colourFacetMappings:
   "Clear": "Clear"
   # Green
   "Bottle Green": "Green"
+  "Forest Green": "Green"
   "Bright Green": "Green"
   "Dark Green": "Green"
   "Dark Olive": "Green"
@@ -305,6 +307,11 @@ colourFacetMappings:
   "Black & White": "Multi"
   "Navy/Off White/Turquoise": "Multi"
   "Brown/White": "Multi"
+  "Pink/Red": "Multi"
+  "Green/Multi": "Multi"
+  "Black/Green": "Multi"
+  "Blue/Multi": "Multi"
+  "Black/Multi": "Multi"
   # Mole / misc browns
   "Mole": "Brown"
   "Nutmeg": "Brown"
