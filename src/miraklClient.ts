@@ -246,7 +246,7 @@ export class MiraklClient {
     const { data } = await this.http.post<{ import_id: string | number }>(
       '/api/offers/imports',
       form,
-      { headers: { ...form.getHeaders() }, params: this.shopParam() }
+      { headers: { ...form.getHeaders() }, params: { ...this.shopParam(), import_mode: 'NORMAL' } }
     );
 
     logger.info('Stock update accepted by Mirakl', { importId: data.import_id, sku });
