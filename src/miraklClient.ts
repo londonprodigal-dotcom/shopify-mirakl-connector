@@ -7,7 +7,8 @@ import { MiraklImportStatus, MiraklOrder } from './types';
 import { logger } from './logger';
 
 // Mirakl import status strings returned by the API
-type RawStatus = 'WAITING' | 'RUNNING' | 'COMPLETE' | 'FAILED';
+// SENT = delivered to operator, awaiting catalog integration (products only)
+type RawStatus = 'WAITING' | 'RUNNING' | 'SENT' | 'COMPLETE' | 'FAILED';
 
 const POLL_INTERVAL_MS = 10_000;   // 10 seconds between polls
 const POLL_TIMEOUT_MS  = 7_200_000; // 2 hours max wait (large catalogs can be slow)

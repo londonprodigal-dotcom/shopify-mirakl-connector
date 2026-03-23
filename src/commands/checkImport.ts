@@ -30,9 +30,11 @@ export async function runCheckImport(): Promise<void> {
   });
 
   // ─── Still processing ──────────────────────────────────────────────────────
-  if (status.importStatus === 'WAITING' || status.importStatus === 'RUNNING') {
+  // SENT = delivered to operator, awaiting integration into catalog.
+  // Products must be accepted/integrated before offers can reference them.
+  if (status.importStatus === 'WAITING' || status.importStatus === 'RUNNING' || status.importStatus === 'SENT') {
     const elapsed = Math.round((Date.now() - new Date(uploadedAt).getTime()) / 60000);
-    logger.info(`Still processing (${elapsed} min elapsed). Check again later.`);
+    logger.info(`Import status: ${status.importStatus} (${elapsed} min elapsed). Check again later.`);
     return;
   }
 
