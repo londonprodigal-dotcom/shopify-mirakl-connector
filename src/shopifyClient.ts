@@ -24,7 +24,7 @@ const PRODUCTS_QUERY = `
           images(first: 10) {
             edges {
               node {
-                url
+                url(transform: { maxWidth: 2048 })
                 altText
               }
             }
@@ -48,7 +48,7 @@ const PRODUCTS_QUERY = `
                   value
                 }
                 image {
-                  url
+                  url(transform: { maxWidth: 2048 })
                   altText
                 }
               }
@@ -115,6 +115,26 @@ function stripHtml(html: string): string {
 
 // ─── Helper: fix scientific notation barcodes ────────────────────────────────
 
+/**
+ * Validate EAN/UPC check digit using the GS1 algorithm.
+ * Works for EAN-8, UPC-12 (UPC-A), and EAN-13.
+ */
+function isValidCheckDigit(barcode: string): boolean {
+  const digits = barcode.split('').map(Number);
+  const len = digits.length;
+
+  let sum = 0;
+  for (let i = 0; i < len - 1; i++) {
+    // EAN-13: weights 1,3,1,3... ; EAN-8 / UPC-12: weights 3,1,3,1...
+    const weight = len === 13
+      ? (i % 2 === 0 ? 1 : 3)
+      : (i % 2 === 0 ? 3 : 1);
+    sum += digits[i]! * weight;
+  }
+  const expected = (10 - (sum % 10)) % 10;
+  return expected === digits[len - 1];
+}
+
 function normaliseBarcode(raw: string | null | undefined): string | null {
   if (!raw) return null;
   let bc = raw.trim();
@@ -124,11 +144,14 @@ function normaliseBarcode(raw: string | null | undefined): string | null {
     return null;
   }
   // Must contain only digits and be a valid length (EAN-8, UPC-12, EAN-13)
-  if (/^\d{8}$|^\d{12}$|^\d{13}$/.test(bc)) {
-    return bc;
+  if (!/^\d{8}$|^\d{12}$|^\d{13}$/.test(bc)) {
+    return null;
   }
-  // Anything else (decimals, wrong length, text) — treat as no barcode
-  return null;
+  // Validate check digit — Mirakl rejects barcodes with invalid check digits
+  if (!isValidCheckDigit(bc)) {
+    return null;
+  }
+  return bc;
 }
 
 // ─── Helper: extract numeric ID from GID ─────────────────────────────────────

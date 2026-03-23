@@ -50,21 +50,47 @@ export function resolveField(
       return resolveTag(param, product);
 
     case 'colorfacet': {
-      // Resolve colour option first, then fall back to title extraction
-      const colorVal = resolveOption(param, variant, mapping) ?? extractColourFromTitle(product.title, mapping);
-      if (!colorVal) return 'Multi'; // fallback for products without colour option or title
+      // Resolve colour via cascading fallbacks:
+      // 1. Variant option (Color/Colour)
+      // 2. Product title after " - "
+      // 3. Variant title (e.g. "Navy / 10")
+      // 4. Product tags (colour:X)
+      // 5. Default "Multi"
+      const colorVal =
+        resolveOption(param, variant, mapping) ??
+        extractColourFromTitle(product.title, mapping) ??
+        extractColourFromVariantTitle(variant, mapping) ??
+        extractColourFromTags(product, mapping);
+      if (!colorVal) return 'Multi';
       const str = String(colorVal);
-      const facet = mapping.colourFacetMappings?.[str];
-      if (!facet) return str; // pass through if not in map
+      // For slash combos like "Green/Black" that would map to "Multi",
+      // try the primary (first) colour instead
+      const facet = lookupColourFacet(str, mapping);
+      if (facet === 'Multi' || (!facet && str.includes('/'))) {
+        const primary = extractPrimaryFromCombo(str, mapping);
+        if (primary) return lookupColourFacet(primary, mapping) ?? primary;
+      }
+      if (!facet) return str;
       return facet;
     }
 
     case 'colorfacetlower': {
       // Same as colorfacet but lowercased with underscores (for the 22-value colour list)
-      const colorVal2 = resolveOption(param, variant, mapping) ?? extractColourFromTitle(product.title, mapping);
-      if (!colorVal2) return 'multi'; // fallback for products without colour option or title
+      const colorVal2 =
+        resolveOption(param, variant, mapping) ??
+        extractColourFromTitle(product.title, mapping) ??
+        extractColourFromVariantTitle(variant, mapping) ??
+        extractColourFromTags(product, mapping);
+      if (!colorVal2) return 'multi';
       const str2 = String(colorVal2);
-      const facet2 = mapping.colourFacetMappings?.[str2];
+      const facet2 = lookupColourFacet(str2, mapping);
+      if (facet2 === 'Multi' || (!facet2 && str2.includes('/'))) {
+        const primary2 = extractPrimaryFromCombo(str2, mapping);
+        if (primary2) {
+          const pf = lookupColourFacet(primary2, mapping) ?? primary2;
+          return pf.toLowerCase().replace(/\s+/g, '_');
+        }
+      }
       const result = facet2 || str2;
       return result.toLowerCase().replace(/\s+/g, '_');
     }
@@ -142,18 +168,30 @@ function resolveOption(
   return null;
 }
 
+/**
+ * Returns true if an image URL looks like a swatch/thumbnail (typically < 1080px).
+ * Debenhams requires all images to be min 1080px on the short side.
+ */
+function isSwatchImage(url: string): boolean {
+  return /swatch/i.test(url);
+}
+
 function resolveImage(
   index: number,
   product: ShopifyProduct,
   variant: ShopifyVariant
 ): FieldValue {
-  // Prefer the variant-specific image for index 0
-  if (index === 0 && variant.image?.url) {
+  // Filter out swatch images — they are almost always below the 1080px minimum
+  const fullSizeImages = product.images.filter((img) => !isSwatchImage(img.url));
+
+  // Prefer the variant-specific image for index 0 (if not a swatch)
+  if (index === 0 && variant.image?.url && !isSwatchImage(variant.image.url)) {
     return variant.image.url;
   }
   // Adjust index if variant image takes slot 0
-  const adjustedIndex = variant.image?.url ? index - 1 : index;
-  const img = product.images[adjustedIndex < 0 ? 0 : adjustedIndex];
+  const hasVariantImage = variant.image?.url && !isSwatchImage(variant.image.url);
+  const adjustedIndex = hasVariantImage ? index - 1 : index;
+  const img = fullSizeImages[adjustedIndex < 0 ? 0 : adjustedIndex];
   return img?.url ?? null;
 }
 
@@ -181,8 +219,10 @@ function resolveMapped(
   return mapping.categoryMappings['_default'] ?? strValue;
 }
 
-// Debenhams blocks certain words in titles and descriptions
+// Debenhams blocks certain words in titles and descriptions.
+// "louche" is the brand name — Debenhams requires brand-free titles (brand is set via collection field).
 const BANNED_WORDS = [
+  'louche',
   'sustainable', 'eco-friendly', 'eco friendly', 'eco', 'recycled',
   'organic', 'lenzing', 'environmentally', 'chanel', 'chloe', 'alexa',
   'courtney',
@@ -234,6 +274,33 @@ function normaliseSizeValue(val: string): string {
 }
 
 /**
+ * For slash-separated colour combos (e.g. "Green/Black"), extract the first colour
+ * and look it up in colourFacetMappings. Returns the first colour if it maps to a
+ * non-Multi facet, otherwise returns null to let caller decide.
+ */
+function extractPrimaryFromCombo(colorValue: string, mapping: MappingConfig): string | null {
+  if (!colorValue.includes('/')) return null;
+  const first = colorValue.split('/')[0]!.trim();
+  if (!first) return null;
+  // Check if the first part maps to a specific (non-Multi) facet
+  const facet = lookupColourFacet(first, mapping);
+  if (facet && facet !== 'Multi') return first;
+  return null;
+}
+
+/**
+ * Case-insensitive lookup in colourFacetMappings.
+ */
+function lookupColourFacet(color: string, mapping: MappingConfig): string | null {
+  if (mapping.colourFacetMappings?.[color]) return mapping.colourFacetMappings[color]!;
+  const lower = color.toLowerCase();
+  for (const [k, v] of Object.entries(mapping.colourFacetMappings ?? {})) {
+    if (k.toLowerCase() === lower) return v;
+  }
+  return null;
+}
+
+/**
  * Extract colour from product title using the "Product Name - Colour" pattern.
  * Tries exact match first, then case-insensitive match against colourFacetMappings.
  * Returns the matched colour string (as-is from the title), or null if no match.
@@ -258,6 +325,35 @@ function extractColourFromTitle(title: string, mapping: MappingConfig): string |
   // The candidate might be a colour not in the mapping — return it raw
   // so the colorfacet resolver can pass it through
   return candidate;
+}
+
+/**
+ * Scan variant title (e.g. "Navy / 10") for a known colour from colourFacetMappings.
+ * Returns the first matched colour, or null.
+ */
+function extractColourFromVariantTitle(variant: ShopifyVariant, mapping: MappingConfig): string | null {
+  // Variant titles typically look like "Navy / 10" or "Green / M"
+  const parts = variant.title.split(/\s*\/\s*/);
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    if (lookupColourFacet(trimmed, mapping)) return trimmed;
+  }
+  return null;
+}
+
+/**
+ * Check product tags for a colour: prefix (e.g. "colour:Navy").
+ */
+function extractColourFromTags(product: ShopifyProduct, mapping: MappingConfig): string | null {
+  for (const tag of product.tags) {
+    const lower = tag.toLowerCase();
+    if (lower.startsWith('colour:') || lower.startsWith('color:')) {
+      const val = tag.slice(tag.indexOf(':') + 1).trim();
+      if (val && lookupColourFacet(val, mapping)) return val;
+    }
+  }
+  return null;
 }
 
 function resolveTag(prefix: string, product: ShopifyProduct): FieldValue {
