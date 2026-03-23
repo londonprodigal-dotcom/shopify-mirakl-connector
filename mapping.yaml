@@ -439,7 +439,7 @@ offerFieldMappings:
   "quantity":                 "field:variant.inventoryQuantity"
   "warehouse-code":           "static:"
   # Shared
-  "state":                    "default:state_label"
+  "state":                    "default:state_code"
   "leadtime-to-ship":         "default:leadtime_to_ship"
   "update-delete":            "default:update_delete"
   "min-quantity-alert":       "static:5"
