@@ -16,8 +16,22 @@ export async function handleStockUpdate(payload: Record<string, unknown>): Promi
   const bufferApplied = shopifyQty - miraklQty;
 
   const mirakl = new MiraklClient(config);
-  await mirakl.pushStockUpdate(sku, miraklQty);
 
+  // Push stock update and verify Mirakl accepted it.
+  // pushStockUpdate returns import_id. pollUntilDone waits for COMPLETE/FAILED.
+  // If poll times out or import fails, exception propagates → job retries.
+  const importId = await mirakl.pushStockUpdate(sku, miraklQty);
+  const result = await mirakl.pollUntilDone(importId, 'offers');
+
+  if (result.lines_in_error > 0) {
+    const linesOk = result.lines_in_success ?? 0;
+    logger.warn('Stock update had Mirakl errors', { sku, importId, linesOk, linesError: result.lines_in_error });
+    if (linesOk === 0) {
+      throw new Error(`Mirakl rejected stock update for ${sku} (import ${importId})`);
+    }
+  }
+
+  // Only update ledger after verified push
   await query(
     `INSERT INTO stock_ledger (sku, shopify_qty, mirakl_qty, buffer_applied, last_pushed_at)
      VALUES ($1, $2, $3, $4, NOW())
@@ -26,5 +40,5 @@ export async function handleStockUpdate(payload: Record<string, unknown>): Promi
     [sku, shopifyQty, miraklQty, bufferApplied]
   );
 
-  logger.info('Stock update pushed', { sku, shopifyQty, miraklQty, bufferApplied });
+  logger.info('Stock update verified', { sku, shopifyQty, miraklQty, bufferApplied, importId });
 }

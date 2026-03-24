@@ -301,22 +301,30 @@ export class ShopifyClient {
   // ─── Create a Shopify order from a Mirakl sale ──────────────────────────────
 
   async createOrderFromMirakl(order: MiraklOrder): Promise<{ id: number; name: string }> {
-    // Resolve all offer SKUs to Shopify numeric variant IDs
-    const lineItems = (
-      await Promise.all(
-        order.order_lines.map(async (line) => {
-          const variantId = await this.lookupVariantIdBySku(line.offer_sku);
-          if (!variantId) {
-            logger.warn('No variant found for SKU — skipping line', { sku: line.offer_sku });
-            return null;
-          }
-          return { variant_id: Number(variantId), quantity: line.quantity };
-        })
-      )
-    ).filter((l): l is { variant_id: number; quantity: number } => l !== null);
+    // Resolve ALL offer SKUs to Shopify variant IDs.
+    // We reject the entire order if any line item fails to resolve —
+    // partial orders are worse than no order (customer gets incomplete shipment).
+    const failedSkus: string[] = [];
+    const lineItems: Array<{ variant_id: number; quantity: number }> = [];
+
+    for (const line of order.order_lines) {
+      const variantId = await this.lookupVariantIdBySku(line.offer_sku);
+      if (!variantId) {
+        failedSkus.push(line.offer_sku);
+        continue;
+      }
+      lineItems.push({ variant_id: Number(variantId), quantity: line.quantity });
+    }
+
+    if (failedSkus.length > 0) {
+      throw new Error(
+        `Cannot create Shopify order for Mirakl ${order.order_id}: ` +
+        `${failedSkus.length}/${order.order_lines.length} SKUs not found: ${failedSkus.join(', ')}`
+      );
+    }
 
     if (lineItems.length === 0) {
-      throw new Error(`No Shopify variants matched for Mirakl order ${order.order_id}`);
+      throw new Error(`No line items in Mirakl order ${order.order_id}`);
     }
 
     const addr = order.shipping_address;

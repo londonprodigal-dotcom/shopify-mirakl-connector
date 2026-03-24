@@ -6,12 +6,25 @@ import { logger } from '../../logger';
 export async function handleFullAudit(_payload: Record<string, unknown>): Promise<void> {
   logger.info('Starting full audit');
   const auditStart = new Date();
+  const errors: string[] = [];
 
-  // 1. Run stock reconciliation
-  await handleStockReconcile({});
+  // 1. Run stock reconciliation — isolated, don't let failure block order reconciliation
+  try {
+    await handleStockReconcile({});
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Stock reconciliation failed during audit', { error: msg });
+    errors.push(`stock_reconcile: ${msg}`);
+  }
 
-  // 2. Run order reconciliation
-  await handleOrderReconcile({});
+  // 2. Run order reconciliation — isolated
+  try {
+    await handleOrderReconcile({});
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Order reconciliation failed during audit', { error: msg });
+    errors.push(`order_reconcile: ${msg}`);
+  }
 
   // 3. Reap dead jobs
   const deadJobs = await query<{ count: string }>(`SELECT COUNT(*) as count FROM jobs WHERE status = 'dead'`);
@@ -29,13 +42,13 @@ export async function handleFullAudit(_payload: Record<string, unknown>): Promis
   );
   const driftCount = parseInt(driftedSkus.rows[0]?.count ?? '0', 10);
 
-  // Record audit
   const summary = {
     at: auditStart.toISOString(),
     duration_ms: Date.now() - auditStart.getTime(),
     deadJobs: deadCount,
     staleOrders: staleOrderCount,
     driftedSkus: driftCount,
+    errors,
   };
 
   await query(
@@ -44,11 +57,15 @@ export async function handleFullAudit(_payload: Record<string, unknown>): Promis
     [JSON.stringify(summary)]
   );
 
-  // Info-level summary alert
+  const severity = errors.length > 0 ? 'warning' : 'info';
   await query(
-    `INSERT INTO alerts (severity, category, message, metadata) VALUES ('info', 'full_audit', $1, $2)`,
-    [`Nightly audit: ${deadCount} dead jobs, ${staleOrderCount} stale orders, ${driftCount} drifted SKUs`, JSON.stringify(summary)]
+    `INSERT INTO alerts (severity, category, message, metadata) VALUES ($1, 'full_audit', $2, $3)`,
+    [severity, `Nightly audit: ${deadCount} dead, ${staleOrderCount} stale orders, ${driftCount} drift, ${errors.length} errors`, JSON.stringify(summary)]
   );
 
-  logger.info('Full audit complete', summary);
+  if (errors.length > 0) {
+    logger.warn('Full audit completed with errors', summary);
+  } else {
+    logger.info('Full audit complete', summary);
+  }
 }

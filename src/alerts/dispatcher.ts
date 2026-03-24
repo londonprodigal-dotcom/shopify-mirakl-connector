@@ -12,21 +12,37 @@ export async function dispatchAlerts(webhookUrl: string | undefined): Promise<vo
 
   if (undispatched.rows.length === 0) return;
 
+  let consecutiveFailures = 0;
+
   for (const alert of undispatched.rows) {
     try {
       const emoji = alert.severity === 'critical' ? '\u{1F534}' : alert.severity === 'warning' ? '\u{1F7E1}' : '\u2139\uFE0F';
       const text = `${emoji} **[${alert.severity.toUpperCase()}]** ${alert.category}\n${alert.message}`;
 
-      await fetch(webhookUrl, {
+      const response = await fetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: text }), // Discord format
+        body: JSON.stringify({ content: text }),
       });
 
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
       await query(`UPDATE alerts SET dispatched = TRUE WHERE id = $1`, [alert.id]);
+      consecutiveFailures = 0;
     } catch (err) {
-      logger.error('Failed to dispatch alert', { alertId: alert.id, error: String(err) });
-      break; // Don't spam on transient failures
+      consecutiveFailures++;
+      logger.error('Failed to dispatch alert', { alertId: alert.id, error: String(err), consecutiveFailures });
+
+      // After 3 consecutive failures, stop — webhook is likely down.
+      // Undispatched alerts will be retried next dispatcher cycle (30s).
+      if (consecutiveFailures >= 3) {
+        logger.warn('Alert dispatch stopped after 3 consecutive failures, will retry next cycle');
+        break;
+      }
+      // Single failure: skip this alert and try the next one
+      continue;
     }
   }
 }

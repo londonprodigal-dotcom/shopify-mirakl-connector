@@ -1,7 +1,7 @@
 import { loadConfig } from '../../config';
 import { MiraklClient } from '../../miraklClient';
 import { ShopifyClient } from '../../shopifyClient';
-import { query } from '../../db/pool';
+import { withTransaction } from '../../db/pool';
 import { logger } from '../../logger';
 
 const ACTIONABLE_STATES = new Set([
@@ -16,49 +16,54 @@ const ACTIONABLE_STATES = new Set([
 export async function handleCreateOrder(payload: Record<string, unknown>): Promise<void> {
   const miraklOrderId = String(payload.mirakl_order_id);
 
-  // Idempotency check: already created?
-  const existing = await query<{ status: string }>(
-    `SELECT status FROM order_map WHERE mirakl_order_id = $1`,
-    [miraklOrderId]
-  );
-  if (existing.rows[0]?.status === 'created') {
-    logger.info('Order already created, skipping', { miraklOrderId });
-    return;
-  }
-
-  // Upsert pending entry
-  await query(
-    `INSERT INTO order_map (mirakl_order_id, status) VALUES ($1, 'pending')
-     ON CONFLICT (mirakl_order_id) DO UPDATE SET updated_at = NOW()`,
-    [miraklOrderId]
-  );
-
-  const config = loadConfig();
-  const mirakl = new MiraklClient(config);
-  const order = await mirakl.getOrder(miraklOrderId);
-  const state = order.order_state ?? order.status ?? '';
-
-  if (!ACTIONABLE_STATES.has(state)) {
-    logger.info('Mirakl order not actionable, skipping', { miraklOrderId, state });
-    await query(
-      `UPDATE order_map SET status = 'skipped', updated_at = NOW() WHERE mirakl_order_id = $1`,
+  // Entire flow runs inside a transaction with a row-level lock on order_map.
+  // This serializes concurrent create_order jobs for the same Mirakl order,
+  // preventing duplicate Shopify orders.
+  await withTransaction(async (client) => {
+    // Upsert order_map row and lock it. If another job holds the lock, we block here.
+    await client.query(
+      `INSERT INTO order_map (mirakl_order_id, status) VALUES ($1, 'pending')
+       ON CONFLICT (mirakl_order_id) DO UPDATE SET updated_at = NOW()`,
       [miraklOrderId]
     );
-    return;
-  }
+    const locked = await client.query<{ status: string; shopify_order_id: number | null }>(
+      `SELECT status, shopify_order_id FROM order_map WHERE mirakl_order_id = $1 FOR UPDATE`,
+      [miraklOrderId]
+    );
 
-  const shopify = new ShopifyClient(config);
-  const shopifyOrder = await shopify.createOrderFromMirakl(order);
+    const row = locked.rows[0];
+    if (row?.status === 'created' && row.shopify_order_id) {
+      logger.info('Order already created (locked check), skipping', { miraklOrderId, shopifyOrderId: row.shopify_order_id });
+      return;
+    }
 
-  await query(
-    `UPDATE order_map SET shopify_order_id = $2, shopify_order_name = $3, status = 'created', updated_at = NOW()
-     WHERE mirakl_order_id = $1`,
-    [miraklOrderId, shopifyOrder.id, shopifyOrder.name]
-  );
+    const config = loadConfig();
+    const mirakl = new MiraklClient(config);
+    const order = await mirakl.getOrder(miraklOrderId);
+    const state = order.order_state ?? order.status ?? '';
 
-  logger.info('Shopify order created from Mirakl', {
-    miraklOrderId,
-    shopifyOrderId: shopifyOrder.id,
-    shopifyOrderName: shopifyOrder.name,
+    if (!ACTIONABLE_STATES.has(state)) {
+      logger.info('Mirakl order not actionable, skipping', { miraklOrderId, state });
+      await client.query(
+        `UPDATE order_map SET status = 'skipped', updated_at = NOW() WHERE mirakl_order_id = $1`,
+        [miraklOrderId]
+      );
+      return;
+    }
+
+    const shopify = new ShopifyClient(config);
+    const shopifyOrder = await shopify.createOrderFromMirakl(order);
+
+    await client.query(
+      `UPDATE order_map SET shopify_order_id = $2, shopify_order_name = $3, status = 'created', updated_at = NOW()
+       WHERE mirakl_order_id = $1`,
+      [miraklOrderId, shopifyOrder.id, shopifyOrder.name]
+    );
+
+    logger.info('Shopify order created from Mirakl', {
+      miraklOrderId,
+      shopifyOrderId: shopifyOrder.id,
+      shopifyOrderName: shopifyOrder.name,
+    });
   });
 }

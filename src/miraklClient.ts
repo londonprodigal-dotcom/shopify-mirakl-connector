@@ -229,7 +229,7 @@ export class MiraklClient {
 
   /**
    * Build a minimal OF01 CSV in memory and upload it immediately.
-   * No polling — fire-and-forget for webhook handlers.
+   * Returns the import_id. Callers should verify completion via pollUntilDone().
    */
   async pushStockUpdate(sku: string, quantity: number): Promise<string | number> {
     logger.info('Pushing stock update to Mirakl', { sku, quantity });
