@@ -33,15 +33,12 @@ export async function startWorker(): Promise<void> {
   scheduleRecurring('order_reconcile', config.hardening.reconcileOrderIntervalMs);
   scheduleNightlyAudit(config.hardening.fullAuditHourUtc);
 
-  // Alert dispatcher (every 30s) — sends to webhook and/or email
+  // Alert dispatcher (every 30s) — sends to webhook and/or email via Resend
   const alertConfig = {
     webhookUrl: config.hardening.alertWebhookUrl,
     emailTo: config.hardening.alertEmailTo,
-    smtpHost: config.hardening.smtpHost,
-    smtpPort: config.hardening.smtpPort,
-    smtpUser: config.hardening.smtpUser,
-    smtpPass: config.hardening.smtpPass,
-    smtpFrom: config.hardening.smtpFrom,
+    resendApiKey: config.hardening.resendApiKey,
+    resendFrom: config.hardening.resendFrom,
   };
   setInterval(() => dispatchAlerts(alertConfig), 30_000);
 

@@ -54,11 +54,8 @@ export interface AppConfig {
     stockHoldbackLastN: number;
     alertWebhookUrl: string | undefined;
     alertEmailTo: string | undefined;
-    smtpHost: string | undefined;
-    smtpPort: number;
-    smtpUser: string | undefined;
-    smtpPass: string | undefined;
-    smtpFrom: string | undefined;
+    resendApiKey: string | undefined;
+    resendFrom: string | undefined;
     reconcileStockIntervalMs: number;
     reconcileOrderIntervalMs: number;
     batchSyncIntervalMs: number;
@@ -117,11 +114,8 @@ export function loadConfig(): AppConfig {
       stockHoldbackLastN: parseInt(optionalEnv('STOCK_HOLDBACK_LAST_N', '7') ?? '7', 10),
       alertWebhookUrl: optionalEnv('ALERT_WEBHOOK_URL'),
       alertEmailTo: optionalEnv('ALERT_EMAIL_TO'),
-      smtpHost: optionalEnv('SMTP_HOST'),
-      smtpPort: parseInt(optionalEnv('SMTP_PORT', '587') ?? '587', 10),
-      smtpUser: optionalEnv('SMTP_USER'),
-      smtpPass: optionalEnv('SMTP_PASS'),
-      smtpFrom: optionalEnv('SMTP_FROM'),
+      resendApiKey: optionalEnv('RESEND_API_KEY'),
+      resendFrom: optionalEnv('RESEND_FROM'),
       reconcileStockIntervalMs: parseInt(optionalEnv('RECONCILE_STOCK_INTERVAL_MS', '900000') ?? '900000', 10),   // 15 min
       reconcileOrderIntervalMs: parseInt(optionalEnv('RECONCILE_ORDER_INTERVAL_MS', '600000') ?? '600000', 10),   // 10 min
       batchSyncIntervalMs: parseInt(optionalEnv('BATCH_SYNC_INTERVAL_MS', '3600000') ?? '3600000', 10),           // 1 hour

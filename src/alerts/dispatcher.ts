@@ -1,35 +1,41 @@
-import * as nodemailer from 'nodemailer';
 import { query } from '../db/pool';
 import { logger } from '../logger';
 
-interface AlertConfig {
+export interface AlertConfig {
   webhookUrl?: string;
   emailTo?: string;
-  smtpHost?: string;
-  smtpPort?: number;
-  smtpUser?: string;
-  smtpPass?: string;
-  smtpFrom?: string;
+  resendApiKey?: string;
+  resendFrom?: string;
 }
 
-let mailer: nodemailer.Transporter | null = null;
+async function sendEmail(config: AlertConfig, subject: string, html: string, text: string): Promise<void> {
+  if (!config.resendApiKey || !config.emailTo) return;
 
-function getMailer(config: AlertConfig): nodemailer.Transporter | null {
-  if (mailer) return mailer;
-  if (!config.smtpHost || !config.smtpUser || !config.smtpPass) return null;
-
-  mailer = nodemailer.createTransport({
-    host: config.smtpHost,
-    port: config.smtpPort ?? 587,
-    secure: config.smtpPort === 465,
-    auth: { user: config.smtpUser, pass: config.smtpPass },
+  const from = config.resendFrom ?? 'Mirakl Connector <onboarding@resend.dev>';
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${config.resendApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to: [config.emailTo],
+      subject,
+      html,
+      text,
+    }),
   });
-  return mailer;
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Resend API ${response.status}: ${body}`);
+  }
 }
 
 export async function dispatchAlerts(config: AlertConfig): Promise<void> {
   const hasWebhook = !!config.webhookUrl;
-  const hasEmail = !!config.emailTo && !!config.smtpHost;
+  const hasEmail = !!config.resendApiKey && !!config.emailTo;
 
   if (!hasWebhook && !hasEmail) return;
 
@@ -61,33 +67,24 @@ export async function dispatchAlerts(config: AlertConfig): Promise<void> {
         }
       }
 
-      // Send email
+      // Send email via Resend
       if (hasEmail) {
-        const transport = getMailer(config);
-        if (transport) {
-          const subject = `${alert.severity === 'critical' ? 'CRITICAL' : alert.severity === 'warning' ? 'Warning' : 'Info'}: Mirakl Connector — ${alert.category}`;
-          const metadata = alert.metadata ? JSON.stringify(alert.metadata, null, 2) : '';
-          const html = `
-            <div style="font-family: sans-serif; max-width: 600px;">
-              <h2 style="color: ${alert.severity === 'critical' ? '#dc2626' : alert.severity === 'warning' ? '#d97706' : '#2563eb'}">
-                ${emoji} ${alert.severity.toUpperCase()}: ${alert.category}
-              </h2>
-              <p>${alert.message}</p>
-              ${metadata ? `<pre style="background: #f3f4f6; padding: 12px; border-radius: 4px; font-size: 12px; overflow-x: auto;">${metadata}</pre>` : ''}
-              <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 16px 0;">
-              <p style="color: #6b7280; font-size: 12px;">
-                Louche × Debenhams Connector | ${new Date(alert.created_at).toISOString()}
-              </p>
-            </div>`;
+        const subject = `${alert.severity === 'critical' ? 'CRITICAL' : alert.severity === 'warning' ? 'Warning' : 'Info'}: Mirakl Connector — ${alert.category}`;
+        const metadata = alert.metadata ? JSON.stringify(alert.metadata, null, 2) : '';
+        const html = `
+          <div style="font-family: sans-serif; max-width: 600px;">
+            <h2 style="color: ${alert.severity === 'critical' ? '#dc2626' : alert.severity === 'warning' ? '#d97706' : '#2563eb'}">
+              ${emoji} ${alert.severity.toUpperCase()}: ${alert.category}
+            </h2>
+            <p>${alert.message}</p>
+            ${metadata ? `<pre style="background: #f3f4f6; padding: 12px; border-radius: 4px; font-size: 12px; overflow-x: auto;">${metadata}</pre>` : ''}
+            <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 16px 0;">
+            <p style="color: #6b7280; font-size: 12px;">
+              Louche × Debenhams Connector | ${new Date(alert.created_at).toISOString()}
+            </p>
+          </div>`;
 
-          await transport.sendMail({
-            from: config.smtpFrom ?? config.smtpUser,
-            to: config.emailTo,
-            subject,
-            text: `${plainText}\n\n${metadata}`,
-            html,
-          });
-        }
+        await sendEmail(config, subject, html, `${plainText}\n\n${metadata}`);
       }
 
       await query(`UPDATE alerts SET dispatched = TRUE WHERE id = $1`, [alert.id]);
