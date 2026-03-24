@@ -66,10 +66,24 @@ export interface AppConfig {
     queueBacklogWarn: number;
     queueBacklogCrit: number;
     reconcileStaleMinutes: number;
+    watchdogUrls: Array<{ url: string; name: string; staleHours: number; timestampField: string }>;
     driftAlertThreshold: number;
     driftCriticalCount: number;
     degradedMode: boolean;
   };
+}
+
+/**
+ * Parse WATCHDOG_URLS env var.
+ * Format: "name|url|staleHours|timestampField;name2|url2|..."
+ * Example: "warehouse|https://web-prod.up.railway.app/health|26|db_last_modified"
+ */
+function parseWatchdogUrls(raw: string | undefined): Array<{ url: string; name: string; staleHours: number; timestampField: string }> {
+  if (!raw) return [];
+  return raw.split(';').filter(Boolean).map((entry) => {
+    const [name, url, staleHours, timestampField] = entry.split('|');
+    return { name: name ?? 'unknown', url: url ?? '', staleHours: parseFloat(staleHours ?? '26'), timestampField: timestampField ?? 'db_last_modified' };
+  });
 }
 
 export function loadConfig(): AppConfig {
@@ -126,6 +140,7 @@ export function loadConfig(): AppConfig {
       queueBacklogWarn: parseInt(optionalEnv('QUEUE_BACKLOG_WARN', '50') ?? '50', 10),
       queueBacklogCrit: parseInt(optionalEnv('QUEUE_BACKLOG_CRIT', '200') ?? '200', 10),
       reconcileStaleMinutes: parseInt(optionalEnv('RECONCILE_STALE_MINUTES', '30') ?? '30', 10),
+      watchdogUrls: parseWatchdogUrls(optionalEnv('WATCHDOG_URLS')),
       driftAlertThreshold: parseInt(optionalEnv('DRIFT_ALERT_THRESHOLD', '5') ?? '5', 10),
       driftCriticalCount: parseInt(optionalEnv('DRIFT_CRITICAL_COUNT', '20') ?? '20', 10),
       degradedMode: (optionalEnv('DEGRADED_MODE', 'false') ?? 'false') === 'true',

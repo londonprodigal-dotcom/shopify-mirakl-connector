@@ -42,6 +42,15 @@ export async function startWorker(): Promise<void> {
   };
   setInterval(() => dispatchAlerts(alertConfig), 30_000);
 
+  // External service watchdogs (every hour)
+  const watchdogUrls = config.hardening.watchdogUrls;
+  if (watchdogUrls.length > 0) {
+    setInterval(() => runWatchdogs(watchdogUrls), 3_600_000);
+    // First check after 2 minutes (let services warm up)
+    setTimeout(() => runWatchdogs(watchdogUrls), 120_000);
+    logger.info(`Watchdogs configured: ${watchdogUrls.length} services`);
+  }
+
   logger.info('Worker ready', { workerId, pollInterval: config.hardening.jobPollIntervalMs });
 }
 
@@ -138,6 +147,63 @@ async function scheduleNightlyAudit(hourUtc: number): Promise<void> {
   };
   setInterval(check, 60_000); // Check every minute
   logger.info(`Scheduled nightly audit at ${hourUtc}:00 UTC`);
+}
+
+// ─── External service watchdogs ──────────────────────────────────────────────
+
+interface WatchdogConfig {
+  url: string;
+  name: string;
+  staleHours: number;
+  timestampField: string;
+}
+
+async function runWatchdogs(watchdogs: WatchdogConfig[]): Promise<void> {
+  for (const wd of watchdogs) {
+    try {
+      const response = await fetch(wd.url, { signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) {
+        await insertWatchdogAlert(wd.name, `Health endpoint returned HTTP ${response.status}`);
+        continue;
+      }
+
+      const data = await response.json() as Record<string, unknown>;
+      const timestamp = String(data[wd.timestampField] ?? '');
+      if (!timestamp) {
+        await insertWatchdogAlert(wd.name, `No ${wd.timestampField} field in health response`);
+        continue;
+      }
+
+      const ageMs = Date.now() - new Date(timestamp).getTime();
+      const ageHours = ageMs / 3_600_000;
+
+      if (ageHours > wd.staleHours) {
+        await insertWatchdogAlert(
+          wd.name,
+          `Data is ${Math.round(ageHours)}h stale (threshold: ${wd.staleHours}h). Last updated: ${timestamp}`
+        );
+      } else {
+        logger.info('Watchdog OK', { name: wd.name, ageHours: Math.round(ageHours * 10) / 10 });
+      }
+    } catch (err) {
+      await insertWatchdogAlert(wd.name, `Health check failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+async function insertWatchdogAlert(name: string, message: string): Promise<void> {
+  // Rate-limit: don't fire the same watchdog alert more than once per 6 hours
+  const recent = await query<{ count: string }>(
+    `SELECT COUNT(*) as count FROM alerts WHERE category = $1 AND created_at > NOW() - interval '6 hours'`,
+    [`watchdog:${name}`]
+  );
+  if (parseInt(recent.rows[0]?.count ?? '0', 10) > 0) return;
+
+  await query(
+    `INSERT INTO alerts (severity, category, message, metadata) VALUES ('critical', $1, $2, $3)`,
+    [`watchdog:${name}`, message, JSON.stringify({ name, checkedAt: new Date().toISOString() })]
+  );
+  logger.warn('Watchdog alert fired', { name, message });
 }
 
 function sleep(ms: number): Promise<void> {
