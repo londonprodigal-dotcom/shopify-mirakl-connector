@@ -71,7 +71,7 @@ program
     try {
       const config = loadConfig();
       const { startServer } = await import('./server');
-      startServer(config);
+      await startServer(config);
       // No process.exit — event loop keeps the server alive
     } catch (err) {
       logger.error('Server failed to start', {
@@ -79,6 +79,106 @@ program
       });
       process.exit(1);
     }
+  });
+
+program
+  .command('worker')
+  .description('Start the background job worker (processes queued stock updates, order creation, etc.)')
+  .action(async () => {
+    try {
+      const { startWorker } = await import('./worker/index');
+      await startWorker();
+      // No process.exit — poll loop keeps the worker alive
+    } catch (err) {
+      logger.error('Worker failed to start', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      process.exit(1);
+    }
+  });
+
+// Admin commands
+const admin = program.command('admin').description('Admin tools');
+
+admin
+  .command('replay <jobId>')
+  .description('Re-enqueue a failed/dead job')
+  .action(async (jobId: string) => {
+    const { replayJob } = await import('./admin/cli');
+    await replayJob(jobId);
+    const { closePool } = await import('./db/pool');
+    await closePool();
+  });
+
+admin
+  .command('replay-all-dead')
+  .description('Re-enqueue all dead-letter jobs')
+  .action(async () => {
+    const { replayAllDead } = await import('./admin/cli');
+    await replayAllDead();
+    const { closePool } = await import('./db/pool');
+    await closePool();
+  });
+
+admin
+  .command('reconcile-stock')
+  .description('Trigger stock reconciliation')
+  .action(async () => {
+    const { reconcileStock } = await import('./admin/cli');
+    await reconcileStock();
+    const { closePool } = await import('./db/pool');
+    await closePool();
+  });
+
+admin
+  .command('reconcile-orders')
+  .description('Trigger order reconciliation')
+  .action(async () => {
+    const { reconcileOrders } = await import('./admin/cli');
+    await reconcileOrders();
+    const { closePool } = await import('./db/pool');
+    await closePool();
+  });
+
+admin
+  .command('queue-status')
+  .description('Show queue status')
+  .action(async () => {
+    const { queueStatus } = await import('./admin/cli');
+    await queueStatus();
+    const { closePool } = await import('./db/pool');
+    await closePool();
+  });
+
+admin
+  .command('compare-stock')
+  .description('Show stock drift')
+  .action(async () => {
+    const { compareStock } = await import('./admin/cli');
+    await compareStock();
+    const { closePool } = await import('./db/pool');
+    await closePool();
+  });
+
+admin
+  .command('incident-report')
+  .description('Generate 24h incident report')
+  .action(async () => {
+    const { incidentReport } = await import('./admin/cli');
+    await incidentReport();
+    const { closePool } = await import('./db/pool');
+    await closePool();
+  });
+
+admin
+  .command('purge-completed')
+  .description('Delete old completed jobs')
+  .option('-d, --days <days>', 'Days to keep', '7')
+  .action(async (opts: { days: string }) => {
+    const { purgeCompleted } = await import('./admin/cli');
+    await purgeCompleted(parseInt(opts.days, 10));
+    const { closePool } = await import('./db/pool');
+    await closePool();
   });
 
 program.parseAsync(process.argv).catch((err) => {

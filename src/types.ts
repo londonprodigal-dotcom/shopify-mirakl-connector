@@ -175,3 +175,43 @@ export interface SyncResult {
   miraklImportId?: string | number;
   miraklStatus?: string;
 }
+
+// ─── Hardening types ─────────────────────────────────────────────────────────
+
+export interface EventRow {
+  id: number;
+  fingerprint: string;
+  source: string;
+  payload: Record<string, unknown>;
+  received_at: Date;
+}
+
+export interface OrderMapRow {
+  id: number;
+  mirakl_order_id: string;
+  shopify_order_id: number | null;
+  shopify_order_name: string | null;
+  status: 'pending' | 'created' | 'failed';
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface StockLedgerRow {
+  sku: string;
+  shopify_qty: number | null;
+  mirakl_qty: number | null;
+  buffer_applied: number;
+  last_pushed_at: Date | null;
+  last_verified_at: Date | null;
+  drift_detected: boolean;
+}
+
+export interface AlertRow {
+  id: number;
+  severity: 'info' | 'warning' | 'critical';
+  category: string;
+  message: string;
+  metadata: Record<string, unknown> | null;
+  dispatched: boolean;
+  created_at: Date;
+}

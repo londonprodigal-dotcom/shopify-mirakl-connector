@@ -12,8 +12,8 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 COPY mapping.yaml ./
 COPY templates/ ./templates/
-RUN echo "=== Template files in image ===" && ls -la /app/templates/ && echo "=== End template list ==="
+COPY src/db/migrations/ ./dist/db/migrations/
 RUN mkdir -p /app/state /app/output /app/reports
 # Default: run the webhook server.
-# Railway cron services override this with: node dist/index.js sync --incremental
+# Worker service overrides: node dist/index.js worker
 CMD ["node", "dist/index.js", "server"]

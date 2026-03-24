@@ -5,16 +5,70 @@ import { ShopifyClient } from './shopifyClient';
 import { MiraklClient } from './miraklClient';
 import { registerShopifyInventoryWebhook } from './webhooks/shopifyInventory';
 import { registerMiraklOrdersWebhook } from './webhooks/miraklOrders';
+import { correlationMiddleware } from './middleware/correlationId';
+import { runMigrations } from './db/migrate';
+import { query } from './db/pool';
 import { logger } from './logger';
 
-export function startServer(config: AppConfig): void {
+export async function startServer(config: AppConfig): Promise<void> {
   const app     = express();
   const shopify = new ShopifyClient(config);
   const mirakl  = new MiraklClient(config);
 
+  // ── Run DB migrations on startup ──────────────────────────────────────────
+  if (config.hardening.databaseUrl) {
+    await runMigrations();
+    logger.info('Database migrations complete');
+  }
+
+  // ── Correlation ID middleware (before all routes) ─────────────────────────
+  app.use(correlationMiddleware);
+
   // ── Health check ───────────────────────────────────────────────────────────
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', ts: new Date().toISOString() });
+  });
+
+  // ── Deep health check (queue stats + worker heartbeat) ────────────────────
+  app.get('/health/deep', async (_req, res) => {
+    try {
+      const [queueStats, heartbeat] = await Promise.all([
+        query<{ status: string; cnt: string }>(
+          `SELECT status, COUNT(*)::text AS cnt FROM jobs GROUP BY status`
+        ),
+        query<{ value: unknown }>(
+          `SELECT value FROM sync_state WHERE key = 'worker_heartbeat'`
+        ),
+      ]);
+
+      const queue: Record<string, number> = {};
+      for (const row of queueStats.rows) {
+        queue[row.status] = parseInt(row.cnt, 10);
+      }
+
+      const workerHeartbeat = heartbeat.rows[0]?.value ?? null;
+      const pending = queue['pending'] ?? 0;
+      const running = queue['running'] ?? 0;
+      const dead = queue['dead'] ?? 0;
+
+      // Determine health status
+      let status: 'ok' | 'warn' | 'critical' = 'ok';
+      if (pending > config.hardening.queueBacklogCrit || dead > 0) {
+        status = 'critical';
+      } else if (pending > config.hardening.queueBacklogWarn) {
+        status = 'warn';
+      }
+
+      res.json({
+        status,
+        ts: new Date().toISOString(),
+        queue: { pending, running, dead, ...queue },
+        workerHeartbeat,
+      });
+    } catch (err) {
+      logger.error('Deep health check failed', { error: String(err) });
+      res.status(503).json({ status: 'error', error: 'Database unavailable' });
+    }
   });
 
   // ── Image proxy — rewrites DPI metadata to 72 for Mirakl compliance ───────
@@ -60,6 +114,7 @@ export function startServer(config: AppConfig): void {
   app.listen(port, () => {
     logger.info('Webhook server listening', { port });
     logger.info('  GET  /health');
+    logger.info('  GET  /health/deep                — Queue stats + worker heartbeat');
     logger.info('  GET  /img?url=<shopify-cdn-url>   — Image proxy (DPI rewrite to 72)');
     logger.info('  POST /webhooks/shopify/inventory  — Shopify stock changes → Mirakl OF01');
     logger.info('  POST /webhooks/mirakl/orders      — Mirakl sale → Shopify order');

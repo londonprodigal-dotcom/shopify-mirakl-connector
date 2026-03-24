@@ -266,6 +266,53 @@ export class MiraklClient {
     return order;
   }
 
+  // ─── Fetch all offers (paginated) ──────────────────────────────────────────
+
+  async fetchAllOffers(): Promise<Array<{ sku: string; quantity: number; price: number }>> {
+    const offers: Array<{ sku: string; quantity: number; price: number }> = [];
+    let offset = 0;
+    const max = 100;
+
+    while (true) {
+      const { data } = await this.http.get('/api/offers', {
+        params: { ...this.shopParam(), max, offset },
+      });
+      const batch = data.offers ?? [];
+      for (const offer of batch) {
+        offers.push({
+          sku: offer.sku ?? offer.offer_sku ?? '',
+          quantity: offer.quantity ?? 0,
+          price: offer.price ?? 0,
+        });
+      }
+      if (batch.length < max) break;
+      offset += max;
+    }
+
+    return offers;
+  }
+
+  // ─── Fetch recent orders (paginated) ─────────────────────────────────────────
+
+  async fetchRecentOrders(since: string): Promise<MiraklOrder[]> {
+    const orders: MiraklOrder[] = [];
+    let offset = 0;
+    const max = 50;
+    const orderStates = 'WAITING_DEBIT_PAYMENT,WAITING_ACCEPTANCE,SHIPPING,SHIPPED,TO_COLLECT,RECEIVED';
+
+    while (true) {
+      const { data } = await this.http.get('/api/orders', {
+        params: { ...this.shopParam(), max, offset, start_date: since, order_state_codes: orderStates },
+      });
+      const batch = data.orders ?? [];
+      orders.push(...batch);
+      if (batch.length < max) break;
+      offset += max;
+    }
+
+    return orders;
+  }
+
   // ─── Convenience: upload + wait + handle errors ────────────────────────────
 
   async importAndWait(

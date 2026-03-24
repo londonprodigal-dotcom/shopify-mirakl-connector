@@ -48,6 +48,25 @@ export interface AppConfig {
   };
   /** Base URL for the image proxy (e.g. https://connector.up.railway.app). When set, image URLs are rewritten to go through /img?url= proxy for DPI compliance. */
   imageProxyBaseUrl: string | undefined;
+  hardening: {
+    databaseUrl: string;
+    stockBuffer: number;
+    stockHoldbackLastN: number;
+    alertWebhookUrl: string | undefined;
+    reconcileStockIntervalMs: number;
+    reconcileOrderIntervalMs: number;
+    batchSyncIntervalMs: number;
+    fullAuditHourUtc: number;
+    workerId: string;
+    jobPollIntervalMs: number;
+    jobStaleTimeoutMs: number;
+    queueBacklogWarn: number;
+    queueBacklogCrit: number;
+    reconcileStaleMinutes: number;
+    driftAlertThreshold: number;
+    driftCriticalCount: number;
+    degradedMode: boolean;
+  };
 }
 
 export function loadConfig(): AppConfig {
@@ -86,6 +105,25 @@ export function loadConfig(): AppConfig {
       port: parseInt(optionalEnv('PORT', '3000') ?? '3000', 10),
     },
     imageProxyBaseUrl: optionalEnv('IMAGE_PROXY_BASE_URL'),
+    hardening: {
+      databaseUrl: optionalEnv('DATABASE_URL', '') ?? '',
+      stockBuffer: parseInt(optionalEnv('STOCK_BUFFER', '2') ?? '2', 10),
+      stockHoldbackLastN: parseInt(optionalEnv('STOCK_HOLDBACK_LAST_N', '7') ?? '7', 10),
+      alertWebhookUrl: optionalEnv('ALERT_WEBHOOK_URL'),
+      reconcileStockIntervalMs: parseInt(optionalEnv('RECONCILE_STOCK_INTERVAL_MS', '900000') ?? '900000', 10),   // 15 min
+      reconcileOrderIntervalMs: parseInt(optionalEnv('RECONCILE_ORDER_INTERVAL_MS', '600000') ?? '600000', 10),   // 10 min
+      batchSyncIntervalMs: parseInt(optionalEnv('BATCH_SYNC_INTERVAL_MS', '3600000') ?? '3600000', 10),           // 1 hour
+      fullAuditHourUtc: parseInt(optionalEnv('FULL_AUDIT_HOUR_UTC', '3') ?? '3', 10),
+      workerId: optionalEnv('WORKER_ID', `worker-${process.pid}`) ?? `worker-${process.pid}`,
+      jobPollIntervalMs: parseInt(optionalEnv('JOB_POLL_INTERVAL_MS', '5000') ?? '5000', 10),
+      jobStaleTimeoutMs: parseInt(optionalEnv('JOB_STALE_TIMEOUT_MS', '600000') ?? '600000', 10),                 // 10 min
+      queueBacklogWarn: parseInt(optionalEnv('QUEUE_BACKLOG_WARN', '50') ?? '50', 10),
+      queueBacklogCrit: parseInt(optionalEnv('QUEUE_BACKLOG_CRIT', '200') ?? '200', 10),
+      reconcileStaleMinutes: parseInt(optionalEnv('RECONCILE_STALE_MINUTES', '30') ?? '30', 10),
+      driftAlertThreshold: parseInt(optionalEnv('DRIFT_ALERT_THRESHOLD', '5') ?? '5', 10),
+      driftCriticalCount: parseInt(optionalEnv('DRIFT_CRITICAL_COUNT', '20') ?? '20', 10),
+      degradedMode: (optionalEnv('DEGRADED_MODE', 'false') ?? 'false') === 'true',
+    },
   };
 }
 

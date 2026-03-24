@@ -363,6 +363,52 @@ export class ShopifyClient {
     return result.order;
   }
 
+  // ─── Fetch all inventory levels by SKU (for reconciliation) ────────────────
+
+  async fetchAllInventoryLevels(): Promise<Map<string, number>> {
+    interface InventoryResponse {
+      data?: {
+        productVariants: {
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          edges: Array<{ node: { sku: string; inventoryQuantity: number } }>;
+        };
+      };
+    }
+
+    const levels = new Map<string, number>();
+    let cursor: string | null = null;
+
+    const INVENTORY_QUERY = `
+      query GetInventory($cursor: String) {
+        productVariants(first: 100, after: $cursor, query: "inventory_quantity:>=0") {
+          pageInfo { hasNextPage endCursor }
+          edges {
+            node {
+              sku
+              inventoryQuantity
+            }
+          }
+        }
+      }
+    `;
+
+    do {
+      const result: InventoryResponse = await this.gql<InventoryResponse>(INVENTORY_QUERY, { cursor });
+
+      const variants = result.data?.productVariants;
+      if (!variants) break;
+
+      for (const edge of variants.edges) {
+        const { sku, inventoryQuantity } = edge.node;
+        if (sku) levels.set(sku, inventoryQuantity);
+      }
+
+      cursor = variants.pageInfo.hasNextPage ? variants.pageInfo.endCursor : null;
+    } while (cursor);
+
+    return levels;
+  }
+
   /**
    * Bulk-update variant barcodes for a single product.
    * Uses productVariantsBulkUpdate (productVariantUpdate was removed in 2024-01+).

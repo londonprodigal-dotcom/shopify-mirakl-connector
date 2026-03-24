@@ -1,6 +1,8 @@
 import { ShopifyProduct, MiraklRow, MappingConfig } from '../types';
 import { resolveField } from './fieldResolver';
 import { normaliseHeaderKey, findDescriptor } from './productMapper';
+import { loadConfig } from '../config';
+import { applyStockBuffer } from '../worker/handlers/stockUpdate';
 import { logger } from '../logger';
 
 /**
@@ -69,6 +71,16 @@ export function mapOfferToRows(
 
     // Validate price is present and numeric
     validateOfferRow(row, product, variant);
+
+    // Apply stock buffer to quantity
+    const qtyKey = Object.keys(row).find(k => normaliseHeaderKey(k) === 'quantity');
+    if (qtyKey && row[qtyKey] !== undefined && row[qtyKey] !== null && row[qtyKey] !== '') {
+      const rawQty = Number(row[qtyKey]);
+      if (!isNaN(rawQty)) {
+        const cfg = loadConfig();
+        row[qtyKey] = applyStockBuffer(rawQty, cfg.hardening.stockBuffer, cfg.hardening.stockHoldbackLastN);
+      }
+    }
 
     rows.push(row);
   }
