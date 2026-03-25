@@ -71,7 +71,9 @@ export async function startServer(config: AppConfig): Promise<void> {
     }
   });
 
-  // ── Image proxy — rewrites DPI metadata to 72 for Mirakl compliance ───────
+  // ── Image proxy — resizes to ≥1080px short side + DPI 72 for Mirakl ───────
+  const MIN_SHORT_SIDE = 1080;
+
   app.get('/img', async (req, res) => {
     const url = req.query.url as string | undefined;
     if (!url || !url.startsWith('https://cdn.shopify.com/')) {
@@ -85,10 +87,26 @@ export async function startServer(config: AppConfig): Promise<void> {
         return;
       }
       const buffer = Buffer.from(await response.arrayBuffer());
-      // Rewrite DPI metadata to 72 using sharp — no re-encoding, just metadata fix
-      const fixed = await sharp(buffer)
+      const metadata = await sharp(buffer).metadata();
+      const w = metadata.width ?? 0;
+      const h = metadata.height ?? 0;
+      const shortSide = Math.min(w, h);
+
+      let pipeline = sharp(buffer);
+
+      if (shortSide > 0 && shortSide < MIN_SHORT_SIDE) {
+        // Scale up so the short side hits 1080px, preserving aspect ratio
+        if (w <= h) {
+          pipeline = pipeline.resize({ width: MIN_SHORT_SIDE });
+        } else {
+          pipeline = pipeline.resize({ height: MIN_SHORT_SIDE });
+        }
+      }
+
+      const fixed = await pipeline
         .withMetadata({ density: 72 })
         .toBuffer();
+
       const contentType = response.headers.get('content-type') ?? 'image/jpeg';
       res.set('Content-Type', contentType);
       res.set('Cache-Control', 'public, max-age=86400'); // 24h cache

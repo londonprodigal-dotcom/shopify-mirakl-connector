@@ -159,15 +159,30 @@ function applyCategoryAttributes(
 }
 
 /**
- * Rewrite Shopify CDN image URLs to go through the DPI-fixing proxy.
- * Only rewrites values that look like Shopify CDN image URLs.
+ * Request a larger version of a Shopify CDN image.
+ * Shopify supports on-the-fly resizing via URL width param — append &width=1200
+ * to get a 1200px wide version (height scales proportionally).
+ * This ensures the source image delivered to the proxy is already ≥1080px.
+ */
+function ensureMinWidth(url: string, minWidth = 1200): string {
+  // Shopify CDN URLs support ?width=N or &width=N
+  if (url.includes('width=')) return url; // already has a width param
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}width=${minWidth}`;
+}
+
+/**
+ * Rewrite Shopify CDN image URLs:
+ * 1. Request ≥1200px wide from Shopify CDN (ensures source is large enough)
+ * 2. Route through the image proxy for DPI fix + resize safety net
  */
 function rewriteImageUrls(row: MiraklRow, proxyBaseUrl: string): void {
   const base = proxyBaseUrl.replace(/\/$/, '');
   for (const key of Object.keys(row)) {
     const val = row[key];
     if (typeof val === 'string' && val.startsWith('https://cdn.shopify.com/')) {
-      row[key] = `${base}/img?url=${encodeURIComponent(val)}`;
+      const upsized = ensureMinWidth(val);
+      row[key] = `${base}/img?url=${encodeURIComponent(upsized)}`;
     }
   }
 }
