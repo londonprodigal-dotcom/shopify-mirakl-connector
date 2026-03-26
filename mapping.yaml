@@ -417,8 +417,8 @@ productFieldMappings:
   "ean":                      "field:variant.barcode"
   "collection":               "static:louche"
   "product_title":            "title70:product.title"
-  "long_description":         "sanitized:product.description"
-  "details_and_care":         "sanitized:product.description"
+  "long_description":         "description_only:product.description"
+  "details_and_care":         "care_only:product.description"
   # colour attribute uses colourfacet value list (123 detailed shades: Baby Blue, Navy, Multi, etc.)
   "colour":                   "colorfacet:color"
   # colourfacet attribute uses colour value list (22 base colours, lowercase: beige, black, blue, etc.)

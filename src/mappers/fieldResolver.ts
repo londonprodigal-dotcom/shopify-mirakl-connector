@@ -119,6 +119,20 @@ export function resolveField(
       return sanitizeBannedWords(String(rawVal));
     }
 
+    case 'description_only': {
+      // Extract just the marketing description, strip care instructions
+      const descVal = resolveFieldPath(param, product, variant);
+      if (!descVal) return null;
+      return sanitizeBannedWords(splitDescription(String(descVal)).description);
+    }
+
+    case 'care_only': {
+      // Extract just the fabric + care instructions
+      const careVal = resolveFieldPath(param, product, variant);
+      if (!careVal) return null;
+      return splitDescription(String(careVal)).care;
+    }
+
     case 'title70': {
       // Truncate title to 70 chars (Debenhams max), strip banned words
       const titleVal = resolveFieldPath(param, product, variant);
@@ -351,6 +365,43 @@ function resolveMapped(
 
   // Fallback
   return mapping.categoryMappings['_default'] ?? strValue;
+}
+
+/**
+ * Split a Shopify description into marketing copy vs fabric/care instructions.
+ * Shopify stores both in one field. Debenhams shows them as separate sections.
+ *
+ * Splits at the fabric composition line (e.g. "100% POLYESTER", "50% VISCOSE").
+ * Everything before = description, everything from there = care.
+ */
+function splitDescription(text: string): { description: string; care: string } {
+  // Match fabric composition: "100% POLYESTER", "50% VISCOSE / 25% POLYESTER"
+  const fabricPattern = /\b\d{1,3}%\s*[A-Z]{3,}/;
+  const match = text.match(fabricPattern);
+
+  if (match && match.index !== undefined && match.index > 20) {
+    const desc = text.substring(0, match.index).trim();
+    const care = text.substring(match.index).trim();
+    // Only split if the description part has enough content
+    if (desc.split(/\s+/).length >= 10) {
+      return { description: desc, care };
+    }
+  }
+
+  // Fallback: try splitting on common care instruction markers
+  const careMarkers = ['Turn inside out', 'Machine wash', 'Hand wash', 'Do not bleach', 'Dry clean'];
+  for (const marker of careMarkers) {
+    const idx = text.indexOf(marker);
+    if (idx > 20) {
+      return {
+        description: text.substring(0, idx).trim(),
+        care: text.substring(idx).trim(),
+      };
+    }
+  }
+
+  // No split possible — put everything in description
+  return { description: text, care: text };
 }
 
 // Debenhams blocks certain words in titles and descriptions.
