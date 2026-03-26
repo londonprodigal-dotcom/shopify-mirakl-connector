@@ -31,6 +31,7 @@ export async function startWorker(): Promise<void> {
   // Schedule recurring reconciliation jobs
   scheduleRecurring('stock_reconcile', config.hardening.reconcileStockIntervalMs);
   scheduleRecurring('order_reconcile', config.hardening.reconcileOrderIntervalMs);
+  scheduleRecurring('check_import', 300_000); // Check for pending PA01 imports every 5min
   scheduleNightlyAudit(config.hardening.fullAuditHourUtc);
 
   // Alert dispatcher (every 30s) — sends to webhook and/or email via Resend

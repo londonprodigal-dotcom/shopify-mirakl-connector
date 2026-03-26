@@ -208,17 +208,33 @@ export async function runSync(options: SyncOptions): Promise<SyncResult> {
   const productImportId = await mirakl.uploadProductsFile(productCsvPath);
 
   // Save state: pending import + offers CSV path + updated hashes
+  const pendingImport = {
+    importId: productImportId,
+    offersCsvPath: offersCsvPath ?? '',
+    uploadedAt: new Date().toISOString(),
+  };
   state.write({
     ...state.read(),
-    pendingProductImport: {
-      importId: productImportId,
-      offersCsvPath: offersCsvPath ?? '',
-      uploadedAt: new Date().toISOString(),
-    },
+    pendingProductImport: pendingImport,
     productHashes: { ...oldHashes, ...newHashes },
   });
 
-  logger.info('PA01 upload accepted. Run check-import to monitor and trigger OF01.', {
+  // Also write to Postgres so the Railway worker can pick it up for automated check_import
+  try {
+    const { query: dbQuery } = await import('../db/pool');
+    await dbQuery(
+      `INSERT INTO sync_state (key, value) VALUES ('pending_product_import', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+      [JSON.stringify(pendingImport)]
+    );
+    logger.info('Pending import saved to database for automated check_import');
+  } catch (err) {
+    logger.warn('Could not save pending import to database (worker will not auto-check)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  logger.info('PA01 upload accepted. Worker will auto-check and upload OF01 when ready.', {
     importId: productImportId,
   });
 
