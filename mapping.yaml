@@ -332,6 +332,10 @@ colourFacetMappings:
   "Fir": "Green"
   "Navy&White": "Multi"
   "Navy & White": "Multi"
+  "White & Navy": "Multi"
+  "Avocado": "Green"
+  "Avocado Green": "Green"
+  "Fern Green": "Green"
   # Hot colours
   "Hot Pink": "Pink"
   "Mint Green": "Green"
