@@ -40,23 +40,17 @@ export class MiraklClient {
       return req;
     });
 
-    // Retry on 429 (rate limit) with exponential backoff
+    // Fail fast on errors — let job retry handle backoff (never block the worker thread)
     this.http.interceptors.response.use(
       (res) => res,
-      async (err: AxiosError) => {
+      (err: AxiosError) => {
         const status = err.response?.status;
-        const config = err.config as typeof err.config & { _retryCount?: number };
-
-        if (status === 429 && config && (config._retryCount ?? 0) < 3) {
-          config._retryCount = (config._retryCount ?? 0) + 1;
-          const delay = config._retryCount * 30_000; // 30s, 60s, 90s
-          logger.warn('Mirakl 429 rate limited, backing off', { retry: config._retryCount, delayMs: delay });
-          await new Promise(r => setTimeout(r, delay));
-          return this.http.request(config);
-        }
-
         const body = JSON.stringify(err.response?.data ?? err.message).slice(0, 500);
-        logger.error('Mirakl API error', { status, body });
+        if (status === 429) {
+          logger.warn('Mirakl 429 rate limited — job will retry later', { url: err.config?.url });
+        } else {
+          logger.error('Mirakl API error', { status, body });
+        }
         return Promise.reject(err);
       }
     );
