@@ -95,6 +95,23 @@ export function resolveField(
       return result.toLowerCase().replace(/\s+/g, '_');
     }
 
+    case 'pricefull': {
+      // Mirakl "price" = full/original price.
+      // If compareAtPrice exists and is higher than price, use it as the full price.
+      // Otherwise use the current price.
+      const compare = parseFloat(variant.compareAtPrice || '0');
+      const current = parseFloat(variant.price || '0');
+      return (compare > current) ? compare.toFixed(2) : current.toFixed(2);
+    }
+
+    case 'pricesale': {
+      // Mirakl "discount-price" = sale price (must be lower than "price").
+      // Only set when product is actually on sale (compareAtPrice > price).
+      const cmp = parseFloat(variant.compareAtPrice || '0');
+      const cur = parseFloat(variant.price || '0');
+      return (cmp > cur) ? cur.toFixed(2) : null;
+    }
+
     case 'sanitized': {
       // Resolve a field value and strip banned marketplace words
       const rawVal = resolveFieldPath(param, product, variant);

@@ -451,8 +451,11 @@ offerFieldMappings:
   "product-id":               "field:variant.barcode"
   "product-id-type":          "static:EAN"
   "description":              "field:product.description"
-  "price":                    "field:variant.price"
-  "discount-price":           "field:variant.compareAtPrice"
+  # Mirakl: price = full/original price, discount-price = sale price (must be < price)
+  # When compareAtPrice exists: price=compareAtPrice, discount-price=price
+  # When no compareAtPrice: price=price, discount-price=empty
+  "price":                    "pricefull:"
+  "discount-price":           "pricesale:"
   "discount-start-date":      "static:"
   "discount-end-date":        "static:"
   # Stock template
