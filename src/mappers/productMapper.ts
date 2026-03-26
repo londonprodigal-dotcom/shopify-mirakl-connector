@@ -172,17 +172,15 @@ function ensureMinWidth(url: string, minWidth = 1200): string {
 }
 
 /**
- * Rewrite Shopify CDN image URLs:
- * 1. Request ≥1200px wide from Shopify CDN (ensures source is large enough)
- * 2. Route through the image proxy for DPI fix + resize safety net
+ * Rewrite Shopify CDN image URLs to ensure minimum dimensions for Mirakl.
+ * Uses Shopify CDN's native ?width= param for on-the-fly resizing.
+ * Direct CDN URLs are faster + more reliable than proxying through our server.
  */
-function rewriteImageUrls(row: MiraklRow, proxyBaseUrl: string): void {
-  const base = proxyBaseUrl.replace(/\/$/, '');
+function rewriteImageUrls(row: MiraklRow, _proxyBaseUrl: string): void {
   for (const key of Object.keys(row)) {
     const val = row[key];
     if (typeof val === 'string' && val.startsWith('https://cdn.shopify.com/')) {
-      const upsized = ensureMinWidth(val);
-      row[key] = `${base}/img?url=${encodeURIComponent(upsized)}`;
+      row[key] = ensureMinWidth(val);
     }
   }
 }
