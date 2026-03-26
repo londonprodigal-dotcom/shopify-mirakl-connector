@@ -21,11 +21,13 @@ const PRODUCTS_QUERY = `
           tags
           updatedAt
           status
-          images(first: 10) {
+          images(first: 12) {
             edges {
               node {
                 url(transform: { maxWidth: 2048 })
                 altText
+                width
+                height
               }
             }
           }
@@ -50,6 +52,8 @@ const PRODUCTS_QUERY = `
                 image {
                   url(transform: { maxWidth: 2048 })
                   altText
+                  width
+                  height
                 }
               }
             }
@@ -71,7 +75,7 @@ interface GqlVariantNode {
   barcode: string | null;
   inventoryQuantity: number;
   selectedOptions: Array<{ name: string; value: string }>;
-  image: { url: string; altText: string | null } | null;
+  image: { url: string; altText: string | null; width?: number; height?: number } | null;
 }
 
 interface GqlProductNode {
@@ -83,7 +87,7 @@ interface GqlProductNode {
   tags: string[];
   updatedAt: string;
   status: string;
-  images: { edges: Array<{ node: { url: string; altText: string | null } }> };
+  images: { edges: Array<{ node: { url: string; altText: string | null; width?: number; height?: number } }> };
   options: Array<{ name: string; values: string[] }>;
   variants: { edges: Array<{ node: GqlVariantNode }> };
 }
@@ -185,6 +189,8 @@ function normaliseProduct(raw: GqlProductNode): ShopifyProduct {
   const images: ShopifyImage[] = raw.images.edges.map((e) => ({
     url: e.node.url,
     altText: e.node.altText,
+    width: e.node.width,
+    height: e.node.height,
   }));
 
   const variants: ShopifyVariant[] = raw.variants.edges.map((e) =>

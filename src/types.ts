@@ -8,6 +8,8 @@ export interface ShopifySelectedOption {
 export interface ShopifyImage {
   url: string;
   altText: string | null;
+  width?: number;
+  height?: number;
 }
 
 export interface ShopifyVariant {

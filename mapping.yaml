@@ -416,7 +416,7 @@ productFieldMappings:
   "product_id":               "field:variant.numericId"
   "ean":                      "field:variant.barcode"
   "collection":               "static:louche"
-  "product_title":            "sanitized:product.title"
+  "product_title":            "title70:product.title"
   "long_description":         "sanitized:product.description"
   "details_and_care":         "sanitized:product.description"
   # colour attribute uses colourfacet value list (123 detailed shades: Baby Blue, Navy, Multi, etc.)
@@ -433,6 +433,12 @@ productFieldMappings:
   "image_(additional_5)":     "image:5"
   # Swatch is mandatory — use first product image as fallback if no dedicated swatch
   "swatch":                   "image:0"
+  # Smart style derivation from product title (overrides generic categoryAttributes defaults)
+  "style_womensdresses":      "dressstyle:"
+  "style_womenstops":         "topstyle:"
+  "style_womensjacketscoats": "coatstyle:"
+  "style_womenstrousers":     "trouserstyle:"
+  "style_skirts":             "skirtstyle:"
   "item_weight":              "field:variant.weight"
   # Returns: Standard | Hygiene | Nonrefundable
   # Override per product_type in categoryMappings or set per-product via tags (tag:returns)
@@ -475,14 +481,12 @@ categoryAttributes:
   "women-clothing-womens_dresses":
     category2_dresses: "dresses"
     sleeve_length: "short_sleeve"
-    style_womensdresses: "dress"
     range_womensclothingacc: "main"
     occasion_womensclothingacc: "casual"
 
   "women-clothing-womens_tops":
     category2_tops: "tops"
     sleeve_length: "short_sleeve"
-    style_womenstops: "blouse"
     range_womensclothingacc: "main"
     occasion_womensclothingacc: "casual"
 
@@ -502,13 +506,11 @@ categoryAttributes:
 
   "women-clothing-womens_skirts":
     category2_skirts: "skirts"
-    style_skirts: "skirt"
     range_womensclothingacc: "main"
     occasion_womensclothingacc: "casual"
 
   "women-clothing-womens_trousers":
     category2_trousers: "trousers"
-    style_womenstrousers: "trousers"
     range_womensclothingacc: "main"
     occasion_womensclothingacc: "casual"
 
@@ -527,7 +529,6 @@ categoryAttributes:
   "women-clothing-womens_jackets_and_coats":
     category2_jacketscoats: "jackets_&_coats"
     sleeve_length: "long_sleeve"
-    style_womensjacketscoats: "casual_jacket"
     range_womensclothingacc: "main"
     occasion_womensclothingacc: "casual"
 

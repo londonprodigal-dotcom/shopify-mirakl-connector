@@ -11,7 +11,7 @@
  *   "tag:<prefix>"      – find tag starting with prefix and return the suffix
  */
 
-import { ShopifyProduct, ShopifyVariant, MappingConfig } from '../types';
+import { ShopifyProduct, ShopifyVariant, ShopifyImage, MappingConfig } from '../types';
 
 type FieldValue = string | number | null | undefined;
 
@@ -119,6 +119,82 @@ export function resolveField(
       return sanitizeBannedWords(String(rawVal));
     }
 
+    case 'title70': {
+      // Truncate title to 70 chars (Debenhams max), strip banned words
+      const titleVal = resolveFieldPath(param, product, variant);
+      if (!titleVal) return null;
+      const cleaned = sanitizeBannedWords(String(titleVal));
+      return cleaned.length > 70 ? cleaned.substring(0, 70).replace(/\s+\S*$/, '') : cleaned;
+    }
+
+    case 'dressstyle': {
+      // Derive specific dress style from product title
+      const t = product.title.toLowerCase();
+      if (t.includes('mini')) return 'mini_dress';
+      if (t.includes('midi')) return 'midi_dress';
+      if (t.includes('maxi') || t.includes('midaxi')) return 'maxi_dress';
+      if (t.includes('shirt dress') || t.includes('shirtdress')) return 'shirt_dress';
+      if (t.includes('tea dress')) return 'tea_dress';
+      if (t.includes('wrap')) return 'wrap_dress';
+      if (t.includes('bodycon')) return 'bodycon_dress';
+      if (t.includes('shift')) return 'shift_dress';
+      if (t.includes('smock')) return 'smock_dress';
+      if (t.includes('sweater') || t.includes('jumper') || t.includes('knit')) return 'jumper_dress';
+      return 'day_dress';
+    }
+
+    case 'topstyle': {
+      // Derive specific top style from product title
+      const tt = product.title.toLowerCase();
+      if (tt.includes('blouse')) return 'blouse';
+      if (tt.includes('shirt') && !tt.includes('t-shirt')) return 'shirt';
+      if (tt.includes('cami') || tt.includes('vest')) return 'vest_top';
+      if (tt.includes('crop')) return 'crop_top';
+      if (tt.includes('tunic')) return 'tunic';
+      if (tt.includes('t-shirt') || tt.includes('tee')) return 't-shirt';
+      if (tt.includes('peplum')) return 'peplum_top';
+      return 'top';
+    }
+
+    case 'coatstyle': {
+      // Derive specific coat/jacket style from product title
+      const tc = product.title.toLowerCase();
+      if (tc.includes('coat')) return 'coat';
+      if (tc.includes('blazer')) return 'blazer';
+      if (tc.includes('bomber')) return 'bomber_jacket';
+      if (tc.includes('denim jacket')) return 'denim_jacket';
+      if (tc.includes('parka')) return 'parka';
+      if (tc.includes('mac') || tc.includes('trench')) return 'trench_coat';
+      if (tc.includes('gilet')) return 'gilet';
+      return 'jacket';
+    }
+
+    case 'trouserstyle': {
+      // Derive specific trouser style from product title
+      const tp = product.title.toLowerCase();
+      if (tp.includes('wide leg') || tp.includes('wide-leg')) return 'wide_leg_trousers';
+      if (tp.includes('straight')) return 'straight_leg_trousers';
+      if (tp.includes('slim') || tp.includes('skinny')) return 'slim_leg_trousers';
+      if (tp.includes('flare') || tp.includes('flared')) return 'flares';
+      if (tp.includes('cargo')) return 'cargo_trousers';
+      if (tp.includes('crop') || tp.includes('cropped')) return 'cropped_trousers';
+      if (tp.includes('jogger')) return 'joggers';
+      return 'trousers';
+    }
+
+    case 'skirtstyle': {
+      // Derive specific skirt style from product title
+      const ts = product.title.toLowerCase();
+      if (ts.includes('mini')) return 'mini_skirt';
+      if (ts.includes('midi')) return 'midi_skirt';
+      if (ts.includes('maxi')) return 'maxi_skirt';
+      if (ts.includes('pleated') || ts.includes('pleat')) return 'pleated_skirt';
+      if (ts.includes('pencil')) return 'pencil_skirt';
+      if (ts.includes('wrap')) return 'wrap_skirt';
+      if (ts.includes('a-line') || ts.includes('a line')) return 'a-line_skirt';
+      return 'skirt';
+    }
+
     default:
       return undefined;
   }
@@ -186,11 +262,20 @@ function resolveOption(
 }
 
 /**
- * Returns true if an image URL looks like a swatch/thumbnail (typically < 1080px).
  * Debenhams requires all images to be min 1080px on the short side.
+ * Filter out swatches (by URL pattern) and images that are too small.
  */
-function isSwatchImage(url: string): boolean {
-  return /swatch/i.test(url);
+const MIN_IMAGE_SHORT_SIDE = 1080;
+
+function isExcludedImage(img: ShopifyImage): boolean {
+  // URL-based swatch detection
+  if (/swatch/i.test(img.url)) return true;
+  // Dimension-based filtering (when dimensions are available from GraphQL)
+  if (img.width && img.height) {
+    const shortSide = Math.min(img.width, img.height);
+    if (shortSide < MIN_IMAGE_SHORT_SIDE) return true;
+  }
+  return false;
 }
 
 function resolveImage(
@@ -198,15 +283,14 @@ function resolveImage(
   product: ShopifyProduct,
   variant: ShopifyVariant
 ): FieldValue {
-  // Filter out swatch images — they are almost always below the 1080px minimum
-  const fullSizeImages = product.images.filter((img) => !isSwatchImage(img.url));
+  const fullSizeImages = product.images.filter((img) => !isExcludedImage(img));
 
-  // Prefer the variant-specific image for index 0 (if not a swatch)
-  if (index === 0 && variant.image?.url && !isSwatchImage(variant.image.url)) {
+  // Prefer the variant-specific image for index 0 (if large enough)
+  if (index === 0 && variant.image?.url && !isExcludedImage(variant.image as ShopifyImage)) {
     return variant.image.url;
   }
   // Adjust index if variant image takes slot 0
-  const hasVariantImage = variant.image?.url && !isSwatchImage(variant.image.url);
+  const hasVariantImage = variant.image?.url && !isExcludedImage(variant.image as ShopifyImage);
   const adjustedIndex = hasVariantImage ? index - 1 : index;
   const img = fullSizeImages[adjustedIndex < 0 ? 0 : adjustedIndex];
   return img?.url ?? null;
