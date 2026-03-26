@@ -6,7 +6,9 @@ export type JobType =
   | 'stock_reconcile'
   | 'order_reconcile'
   | 'full_audit'
-  | 'catalog_monitor';
+  | 'catalog_monitor'
+  | 'fulfilment_sync'
+  | 'refund_sync';
 
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'dead';
 
@@ -45,4 +47,6 @@ export const RETRY_CONFIG: Record<JobType, { maxAttempts: number; baseDelayMs: n
   order_reconcile:  { maxAttempts: 2, baseDelayMs: 120_000, maxDelayMs: 300_000 },
   full_audit:       { maxAttempts: 2, baseDelayMs: 1_800_000, maxDelayMs: 1_800_000 },
   catalog_monitor:  { maxAttempts: 2, baseDelayMs: 300_000,  maxDelayMs: 600_000 },
+  fulfilment_sync:  { maxAttempts: 5, baseDelayMs: 30_000,  maxDelayMs: 300_000 },
+  refund_sync:      { maxAttempts: 5, baseDelayMs: 30_000,  maxDelayMs: 300_000 },
 };

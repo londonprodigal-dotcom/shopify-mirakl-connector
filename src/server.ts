@@ -5,6 +5,8 @@ import { ShopifyClient } from './shopifyClient';
 import { MiraklClient } from './miraklClient';
 import { registerShopifyInventoryWebhook } from './webhooks/shopifyInventory';
 import { registerMiraklOrdersWebhook } from './webhooks/miraklOrders';
+import { registerShopifyFulfilmentWebhook } from './webhooks/shopifyFulfilment';
+import { registerShopifyRefundWebhook } from './webhooks/shopifyRefund';
 import { correlationMiddleware } from './middleware/correlationId';
 import { runMigrations } from './db/migrate';
 import { query } from './db/pool';
@@ -110,6 +112,8 @@ export async function startServer(config: AppConfig): Promise<void> {
   // level, so raw Buffer and JSON parsing don't interfere with each other.
   registerShopifyInventoryWebhook(app, config, shopify, mirakl);
   registerMiraklOrdersWebhook(app, config, shopify, mirakl);
+  registerShopifyFulfilmentWebhook(app, config, shopify, mirakl);
+  registerShopifyRefundWebhook(app, config, shopify, mirakl);
 
   // ── 404 fallback ───────────────────────────────────────────────────────────
   app.use((_req, res) => {
@@ -122,7 +126,9 @@ export async function startServer(config: AppConfig): Promise<void> {
     logger.info('  GET  /health');
     logger.info('  GET  /health/deep                — Queue stats + worker heartbeat');
     logger.info('  GET  /img?url=<shopify-cdn-url>   — Image proxy (DPI rewrite to 72)');
-    logger.info('  POST /webhooks/shopify/inventory  — Shopify stock changes → Mirakl OF01');
-    logger.info('  POST /webhooks/mirakl/orders      — Mirakl sale → Shopify order');
+    logger.info('  POST /webhooks/shopify/inventory   — Shopify stock changes → Mirakl OF01');
+    logger.info('  POST /webhooks/mirakl/orders       — Mirakl sale → Shopify order');
+    logger.info('  POST /webhooks/shopify/fulfilment  — Shopify fulfilment → Mirakl OR23+OR24');
+    logger.info('  POST /webhooks/shopify/refund      — Shopify refund → Mirakl OR28');
   });
 }

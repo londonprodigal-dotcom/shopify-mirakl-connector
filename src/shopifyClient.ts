@@ -219,21 +219,88 @@ function normaliseProduct(raw: GqlProductNode): ShopifyProduct {
 export class ShopifyClient {
   private readonly endpoint: string;
   private readonly restBaseUrl: string;
-  private readonly headers: Record<string, string>;
+  private readonly storeDomain: string;
+  private headers: Record<string, string>;
+
+  // OAuth client credentials state
+  private readonly clientId: string | undefined;
+  private readonly clientSecret: string | undefined;
+  private oauthToken: string | null = null;
+  private oauthExpiresAt: number = 0;  // Unix ms
 
   constructor(config: AppConfig) {
     this.endpoint    = config.shopify.graphqlEndpoint;
     this.restBaseUrl = config.shopify.restBaseUrl;
+    this.storeDomain = config.shopify.storeDomain;
+    this.clientId    = config.shopify.clientId;
+    this.clientSecret = config.shopify.clientSecret;
     this.headers = {
       'Content-Type': 'application/json',
       'X-Shopify-Access-Token': config.shopify.adminAccessToken,
     };
   }
 
+  // ─── OAuth client credentials flow ─────────────────────────────────────────
+
+  /**
+   * Exchange client_id + client_secret for an access token via Shopify's
+   * OAuth client credentials grant. Token expires in ~24h (86400s);
+   * we refresh 5 minutes before expiry to avoid mid-request failures.
+   */
+  private async refreshOAuthToken(): Promise<string> {
+    if (!this.clientId || !this.clientSecret) {
+      throw new Error('Cannot refresh OAuth token: SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET are required');
+    }
+
+    logger.info('Refreshing Shopify OAuth token via client credentials flow');
+    const response = await fetch(`https://${this.storeDomain}/admin/oauth/access_token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: this.clientId,
+        client_secret: this.clientSecret,
+        grant_type: 'client_credentials',
+      }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Shopify OAuth token exchange failed (HTTP ${response.status}): ${body.slice(0, 500)}`);
+    }
+
+    const data = await response.json() as { access_token: string; expires_in?: number };
+    const expiresInSec = data.expires_in ?? 86400;
+    // Refresh 5 minutes before actual expiry
+    this.oauthExpiresAt = Date.now() + (expiresInSec - 300) * 1000;
+    this.oauthToken = data.access_token;
+
+    logger.info('Shopify OAuth token refreshed', { expiresInSec });
+    return data.access_token;
+  }
+
+  /**
+   * Ensure headers use a fresh access token. If client credentials are
+   * configured, use OAuth; otherwise fall back to the static token.
+   */
+  private async ensureAuth(): Promise<void> {
+    if (!this.clientId || !this.clientSecret) {
+      // Static token mode — nothing to do
+      return;
+    }
+    if (this.oauthToken && Date.now() < this.oauthExpiresAt) {
+      // Token still valid
+      this.headers['X-Shopify-Access-Token'] = this.oauthToken;
+      return;
+    }
+    const token = await this.refreshOAuthToken();
+    this.headers['X-Shopify-Access-Token'] = token;
+  }
+
   private async gql<T = unknown>(
     query: string,
     variables: Record<string, unknown> = {}
   ): Promise<T> {
+    await this.ensureAuth();
     const response = await fetch(this.endpoint, {
       method: 'POST',
       headers: this.headers,
@@ -259,9 +326,10 @@ export class ShopifyClient {
 
   // ─── REST helper ────────────────────────────────────────────────────────────
 
-  private async rest<T>(path: string, body: unknown): Promise<T> {
+  private async rest<T>(path: string, body: unknown, method: string = 'POST'): Promise<T> {
+    await this.ensureAuth();
     const response = await fetch(`${this.restBaseUrl}${path}`, {
-      method:  'POST',
+      method,
       headers: this.headers,
       body:    JSON.stringify(body),
     });
@@ -270,6 +338,35 @@ export class ShopifyClient {
       throw new Error(`Shopify REST ${response.status} ${path}: ${text.slice(0, 500)}`);
     }
     return response.json() as Promise<T>;
+  }
+
+  private async restGet<T>(path: string): Promise<T> {
+    await this.ensureAuth();
+    const response = await fetch(`${this.restBaseUrl}${path}`, {
+      method:  'GET',
+      headers: this.headers,
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Shopify REST GET ${response.status} ${path}: ${text.slice(0, 500)}`);
+    }
+    return response.json() as Promise<T>;
+  }
+
+  // ─── Fetch a Shopify order by ID (REST) ──────────────────────────────────
+
+  async getOrderById(orderId: number): Promise<{
+    id: number;
+    name: string;
+    note: string | null;
+    tags: string;
+    line_items: Array<{ id: number; sku: string; variant_id: number; quantity: number; name: string }>;
+  }> {
+    const result = await this.restGet<{ order: {
+      id: number; name: string; note: string | null; tags: string;
+      line_items: Array<{ id: number; sku: string; variant_id: number; quantity: number; name: string }>;
+    } }>(`/orders/${orderId}.json`);
+    return result.order;
   }
 
   // ─── Inventory item → SKU lookup (for stock webhooks) ───────────────────────

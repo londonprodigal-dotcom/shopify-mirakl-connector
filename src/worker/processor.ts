@@ -6,6 +6,8 @@ import { handleOrderReconcile } from './handlers/orderReconcile';
 import { handleFullAudit } from './handlers/fullAudit';
 import { handleCheckImport } from './handlers/checkImport';
 import { handleCatalogMonitor } from './handlers/catalogMonitor';
+import { handleFulfilmentSync } from './handlers/fulfilmentSync';
+import { handleRefundSync } from './handlers/refundSync';
 import { logger } from '../logger';
 
 type Handler = (payload: Record<string, unknown>) => Promise<void>;
@@ -18,6 +20,8 @@ const handlers: Record<string, Handler> = {
   full_audit: handleFullAudit,
   check_import: handleCheckImport,
   catalog_monitor: handleCatalogMonitor,
+  fulfilment_sync: handleFulfilmentSync,
+  refund_sync: handleRefundSync,
 };
 
 export async function processJob(job: JobRow): Promise<void> {

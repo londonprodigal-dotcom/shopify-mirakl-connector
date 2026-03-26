@@ -30,6 +30,8 @@ export interface AppConfig {
     graphqlEndpoint: string;
     restBaseUrl: string;     // https://<domain>/admin/api/<version>
     webhookSecret: string;   // SHOPIFY_WEBHOOK_SECRET — signs incoming webhooks
+    clientId: string | undefined;       // SHOPIFY_CLIENT_ID — for OAuth client credentials flow
+    clientSecret: string | undefined;   // SHOPIFY_CLIENT_SECRET — for OAuth client credentials flow
   };
   mirakl: {
     baseUrl: string;
@@ -100,11 +102,13 @@ export function loadConfig(): AppConfig {
   return {
     shopify: {
       storeDomain: cleanDomain,
-      adminAccessToken: requireEnv('SHOPIFY_ADMIN_ACCESS_TOKEN'),
+      adminAccessToken: optionalEnv('SHOPIFY_ADMIN_ACCESS_TOKEN', '') ?? '',
       apiVersion,
       graphqlEndpoint: `https://${cleanDomain}/admin/api/${apiVersion}/graphql.json`,
       restBaseUrl:     `https://${cleanDomain}/admin/api/${apiVersion}`,
       webhookSecret:   optionalEnv('SHOPIFY_WEBHOOK_SECRET', '') ?? '',
+      clientId:        optionalEnv('SHOPIFY_CLIENT_ID'),
+      clientSecret:    optionalEnv('SHOPIFY_CLIENT_SECRET'),
     },
     mirakl: {
       baseUrl,

@@ -378,6 +378,63 @@ export class MiraklClient {
     return orders;
   }
 
+  // ─── OR23 – Update tracking info for a shipment ─────────────────────────────
+
+  /**
+   * Send tracking information to Mirakl for an order.
+   * PUT /api/orders/{order_id}/tracking
+   */
+  async updateTracking(
+    orderId: string,
+    orderLineId: string,
+    trackingNumber: string,
+    carrierCode: string,
+    carrierName: string,
+    carrierUrl: string
+  ): Promise<void> {
+    logger.info('OR23 – Sending tracking to Mirakl', { orderId, trackingNumber, carrierCode });
+    await this.http.put(`/api/orders/${orderId}/tracking`, {
+      carrier_code:    carrierCode,
+      carrier_name:    carrierName,
+      tracking_number: trackingNumber,
+      tracking_url:    carrierUrl,
+    });
+    logger.info('OR23 – Tracking sent successfully', { orderId });
+  }
+
+  // ─── OR24 – Confirm shipment ───────────────────────────────────────────────
+
+  /**
+   * Confirm that an order has been shipped on Mirakl.
+   * PUT /api/orders/{order_id}/ship
+   */
+  async confirmShipment(orderId: string): Promise<void> {
+    logger.info('OR24 – Confirming shipment on Mirakl', { orderId });
+    await this.http.put(`/api/orders/${orderId}/ship`, {});
+    logger.info('OR24 – Shipment confirmed', { orderId });
+  }
+
+  // ─── OR28 – Request refund on an order line ────────────────────────────────
+
+  /**
+   * Request a refund on Mirakl for one or more order lines.
+   * POST /api/orders/{order_id}/refund
+   */
+  async requestRefund(
+    orderId: string,
+    lines: Array<{ orderLineId: string; quantity: number; reasonCode?: string }>
+  ): Promise<void> {
+    logger.info('OR28 – Requesting refund on Mirakl', { orderId, lineCount: lines.length });
+    await this.http.post(`/api/orders/${orderId}/refund`, {
+      refunds: lines.map(l => ({
+        order_line_id: l.orderLineId,
+        quantity:      l.quantity,
+        reason_code:   l.reasonCode ?? '15',
+      })),
+    });
+    logger.info('OR28 – Refund requested successfully', { orderId });
+  }
+
   // ─── Convenience: upload + wait + handle errors ────────────────────────────
 
   async importAndWait(
