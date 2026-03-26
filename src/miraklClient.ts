@@ -40,11 +40,22 @@ export class MiraklClient {
       return req;
     });
 
+    // Retry on 429 (rate limit) with exponential backoff
     this.http.interceptors.response.use(
       (res) => res,
-      (err: AxiosError) => {
+      async (err: AxiosError) => {
         const status = err.response?.status;
-        const body   = JSON.stringify(err.response?.data ?? err.message).slice(0, 500);
+        const config = err.config as typeof err.config & { _retryCount?: number };
+
+        if (status === 429 && config && (config._retryCount ?? 0) < 3) {
+          config._retryCount = (config._retryCount ?? 0) + 1;
+          const delay = config._retryCount * 30_000; // 30s, 60s, 90s
+          logger.warn('Mirakl 429 rate limited, backing off', { retry: config._retryCount, delayMs: delay });
+          await new Promise(r => setTimeout(r, delay));
+          return this.http.request(config);
+        }
+
+        const body = JSON.stringify(err.response?.data ?? err.message).slice(0, 500);
         logger.error('Mirakl API error', { status, body });
         return Promise.reject(err);
       }
@@ -290,6 +301,66 @@ export class MiraklClient {
     }
 
     return offers;
+  }
+
+  // ─── CM11 – Export Source Product Data Sheet status ─────────────────────────
+
+  /**
+   * Fetch product integration statuses via CM11.
+   * Returns per-product LIVE/NOT_LIVE status with rejection details.
+   * Use updatedSince for delta exports (recommended every 15 min).
+   */
+  async fetchProductStatuses(updatedSince?: string): Promise<{
+    live: number;
+    notLive: number;
+    errors: Record<string, number>;
+    products: Array<{ sku: string; ean: string; status: string; error?: string }>;
+  }> {
+    const params: Record<string, string | number> = { max: 100 };
+    if (updatedSince) params.updated_since = updatedSince;
+
+    let live = 0, notLive = 0;
+    const errorCounts: Record<string, number> = {};
+    const products: Array<{ sku: string; ean: string; status: string; error?: string }> = [];
+    let offset = 0;
+
+    while (true) {
+      params.offset = offset;
+      const { data } = await this.http.get('/api/mcm/products/sources/status/export', { params });
+
+      const items = Object.values(data).filter(
+        (x): x is Record<string, unknown> => typeof x === 'object' && x !== null && 'status' in x
+      );
+      if (items.length === 0) break;
+
+      for (const p of items) {
+        const sku = String(p.provider_unique_identifier ?? '');
+        const ean = (p.unique_identifiers as Array<{ code: string; value: string }> | undefined)
+          ?.find(u => u.code === 'EAN')?.value ?? '';
+        const status = String(p.status ?? '');
+
+        if (status === 'LIVE') {
+          live++;
+          products.push({ sku, ean, status });
+        } else {
+          notLive++;
+          const errors = p.errors as Array<{ rejection_details?: { message?: string }; message?: string }> | undefined;
+          const detail = errors?.[0]?.rejection_details?.message ?? errors?.[0]?.message ?? 'unknown';
+          // Group by first 80 chars of error
+          const key = detail.substring(0, 80);
+          errorCounts[key] = (errorCounts[key] ?? 0) + 1;
+          products.push({ sku, ean, status, error: detail.substring(0, 200) });
+        }
+      }
+
+      if (items.length < 100) break;
+      offset += 100;
+
+      // Rate limit: pause between pages
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    return { live, notLive, errors: errorCounts, products };
   }
 
   // ─── Fetch recent orders (paginated) ─────────────────────────────────────────
