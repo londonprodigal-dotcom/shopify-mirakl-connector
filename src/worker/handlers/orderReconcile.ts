@@ -23,7 +23,17 @@ export async function handleOrderReconcile(_payload: Record<string, unknown>): P
     const since = new Date(Date.now() - lookbackHours * 3600_000).toISOString();
     logger.info('Starting order reconciliation', { since, lookbackHours });
 
-    const miraklOrders = await mirakl.fetchRecentOrders(since);
+    let miraklOrders;
+    try {
+      miraklOrders = await mirakl.fetchRecentOrders(since);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('429') || msg.includes('rate')) {
+        logger.warn('Order reconciliation skipped — Mirakl rate limited. Will retry next cycle.');
+        return;
+      }
+      throw err;
+    }
     let missingCount = 0;
 
     for (const order of miraklOrders) {

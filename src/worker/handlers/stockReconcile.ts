@@ -27,11 +27,22 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
 
     logger.info('Starting stock reconciliation');
 
-    // Fetch from both sides
-    const [shopifyLevels, miraklOffers] = await Promise.all([
-      shopify.fetchAllInventoryLevels(),
-      mirakl.fetchAllOffers(),
-    ]);
+    // Fetch from both sides — gracefully skip on rate limit
+    let shopifyLevels: Map<string, number>;
+    let miraklOffers: Array<{ sku: string; quantity: number; price: number }>;
+    try {
+      [shopifyLevels, miraklOffers] = await Promise.all([
+        shopify.fetchAllInventoryLevels(),
+        mirakl.fetchAllOffers(),
+      ]);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('429') || msg.includes('rate')) {
+        logger.warn('Stock reconciliation skipped — Mirakl rate limited. Will retry next cycle.');
+        return;
+      }
+      throw err;
+    }
 
     // Build Mirakl map: sku -> qty
     const miraklMap = new Map<string, number>();

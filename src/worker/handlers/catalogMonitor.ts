@@ -22,7 +22,17 @@ export async function handleCatalogMonitor(_payload: Record<string, unknown>): P
 
   logger.info('[catalog_monitor] Checking product statuses via CM11', { updatedSince });
 
-  const result = await mirakl.fetchProductStatuses(updatedSince);
+  let result: Awaited<ReturnType<typeof mirakl.fetchProductStatuses>>;
+  try {
+    result = await mirakl.fetchProductStatuses(updatedSince);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('429') || msg.includes('rate')) {
+      logger.warn('[catalog_monitor] Skipped — Mirakl rate limited. Will retry next cycle.');
+      return;
+    }
+    throw err;
+  }
 
   logger.info('[catalog_monitor] Product status summary', {
     live: result.live,
