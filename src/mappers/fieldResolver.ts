@@ -128,63 +128,92 @@ export function resolveField(
     }
 
     case 'dressstyle': {
-      // Derive specific dress style from product title
+      // Derive specific dress style from product title (exact Mirakl values)
       const t = product.title.toLowerCase();
+      if (t.includes('midaxi')) return 'midaxi_dress';
       if (t.includes('mini')) return 'mini_dress';
       if (t.includes('midi')) return 'midi_dress';
-      if (t.includes('maxi') || t.includes('midaxi')) return 'maxi_dress';
+      if (t.includes('maxi')) return 'maxi_dress';
       if (t.includes('shirt dress') || t.includes('shirtdress')) return 'shirt_dress';
       if (t.includes('tea dress')) return 'tea_dress';
       if (t.includes('wrap')) return 'wrap_dress';
       if (t.includes('bodycon')) return 'bodycon_dress';
       if (t.includes('shift')) return 'shift_dress';
       if (t.includes('smock')) return 'smock_dress';
+      if (t.includes('swing')) return 'swing_dress';
+      if (t.includes('slip')) return 'slip_dress';
+      if (t.includes('skater')) return 'skater_dress';
+      if (t.includes('pinafore')) return 'pinafore_dress';
       if (t.includes('sweater') || t.includes('jumper') || t.includes('knit')) return 'jumper_dress';
-      return 'day_dress';
+      if (t.includes('blazer')) return 'blazer_dress';
+      if (t.includes('t-shirt')) return 't-shirt_dress';
+      if (t.includes('fit') && t.includes('flare')) return 'fit_&_flare_dress';
+      return 'dress';
     }
 
     case 'topstyle': {
-      // Derive specific top style from product title
+      // Derive specific top style from product title (exact Mirakl values)
       const tt = product.title.toLowerCase();
       if (tt.includes('blouse')) return 'blouse';
-      if (tt.includes('shirt') && !tt.includes('t-shirt')) return 'shirt';
-      if (tt.includes('cami') || tt.includes('vest')) return 'vest_top';
+      if (tt.includes('cami') || tt.includes('camisole')) return 'cami';
       if (tt.includes('crop')) return 'crop_top';
       if (tt.includes('tunic')) return 'tunic';
-      if (tt.includes('t-shirt') || tt.includes('tee')) return 't-shirt';
       if (tt.includes('peplum')) return 'peplum_top';
+      if (tt.includes('bodysuit')) return 'bodysuit';
+      if (tt.includes('kimono')) return 'kimono';
+      if (tt.includes('halter')) return 'halterneck';
+      if (tt.includes('wrap')) return 'wrap_top';
+      if (tt.includes('smock')) return 'smock_top';
+      if (tt.includes('shell')) return 'shell_top';
       return 'top';
     }
 
     case 'coatstyle': {
-      // Derive specific coat/jacket style from product title
+      // Derive specific coat/jacket style from product title (exact Mirakl values)
       const tc = product.title.toLowerCase();
-      if (tc.includes('coat')) return 'coat';
+      if (tc.includes('trench')) return 'trench_coat';
+      if (tc.includes('parka')) return 'parka';
       if (tc.includes('blazer')) return 'blazer';
       if (tc.includes('bomber')) return 'bomber_jacket';
       if (tc.includes('denim jacket')) return 'denim_jacket';
-      if (tc.includes('parka')) return 'parka';
-      if (tc.includes('mac') || tc.includes('trench')) return 'trench_coat';
       if (tc.includes('gilet')) return 'gilet';
-      return 'jacket';
+      if (tc.includes('cape')) return 'cape';
+      if (tc.includes('poncho')) return 'poncho';
+      if (tc.includes('quilted')) return 'quilted_jacket';
+      if (tc.includes('puffer')) return 'puffer_jacket';
+      if (tc.includes('teddy')) return 'teddy_coat';
+      if (tc.includes('duffle')) return 'duffle_coat';
+      if (tc.includes('wool')) return 'wool_coat';
+      if (tc.includes('faux fur')) return 'faux_fur_coat';
+      if (tc.includes('biker')) return 'biker_jacket';
+      if (tc.includes('utility')) return 'utility_jacket';
+      if (tc.includes('mac') || tc.includes('rain')) return 'rain_mac';
+      if (tc.includes('coat')) return 'coat';
+      return 'casual_jacket';
     }
 
     case 'trouserstyle': {
-      // Derive specific trouser style from product title
+      // Derive specific trouser style from product title (exact Mirakl values)
       const tp = product.title.toLowerCase();
       if (tp.includes('wide leg') || tp.includes('wide-leg')) return 'wide_leg_trousers';
-      if (tp.includes('straight')) return 'straight_leg_trousers';
-      if (tp.includes('slim') || tp.includes('skinny')) return 'slim_leg_trousers';
+      if (tp.includes('straight')) return 'straight_trousers';
+      if (tp.includes('slim') || tp.includes('skinny')) return 'slim_fit_trousers';
       if (tp.includes('flare') || tp.includes('flared')) return 'flares';
       if (tp.includes('cargo')) return 'cargo_trousers';
       if (tp.includes('crop') || tp.includes('cropped')) return 'cropped_trousers';
       if (tp.includes('jogger')) return 'joggers';
+      if (tp.includes('culotte')) return 'culottes';
+      if (tp.includes('cigarette')) return 'cigarette_trouser';
+      if (tp.includes('tapered')) return 'tapered_trousers';
+      if (tp.includes('cord')) return 'cord_trousers';
+      if (tp.includes('chino')) return 'chinos';
       return 'trousers';
     }
 
     case 'skirtstyle': {
-      // Derive specific skirt style from product title
+      // Derive specific skirt style from product title (exact Mirakl values)
       const ts = product.title.toLowerCase();
+      if (ts.includes('midaxi')) return 'midaxi_skirt';
       if (ts.includes('mini')) return 'mini_skirt';
       if (ts.includes('midi')) return 'midi_skirt';
       if (ts.includes('maxi')) return 'maxi_skirt';
@@ -192,6 +221,8 @@ export function resolveField(
       if (ts.includes('pencil')) return 'pencil_skirt';
       if (ts.includes('wrap')) return 'wrap_skirt';
       if (ts.includes('a-line') || ts.includes('a line')) return 'a-line_skirt';
+      if (ts.includes('skater')) return 'skater_skirt';
+      if (ts.includes('denim')) return 'denim_skirt';
       return 'skirt';
     }
 
@@ -284,15 +315,17 @@ function resolveImage(
   variant: ShopifyVariant
 ): FieldValue {
   const fullSizeImages = product.images.filter((img) => !isExcludedImage(img));
+  // Fallback: if all images were filtered out, use originals (don't leave product imageless)
+  const images = fullSizeImages.length > 0 ? fullSizeImages : product.images.filter((img) => !/swatch/i.test(img.url));
 
-  // Prefer the variant-specific image for index 0 (if large enough)
-  if (index === 0 && variant.image?.url && !isExcludedImage(variant.image as ShopifyImage)) {
+  // Prefer the variant-specific image for index 0
+  if (index === 0 && variant.image?.url && !/swatch/i.test(variant.image.url)) {
     return variant.image.url;
   }
   // Adjust index if variant image takes slot 0
-  const hasVariantImage = variant.image?.url && !isExcludedImage(variant.image as ShopifyImage);
+  const hasVariantImage = variant.image?.url && !/swatch/i.test(variant.image.url);
   const adjustedIndex = hasVariantImage ? index - 1 : index;
-  const img = fullSizeImages[adjustedIndex < 0 ? 0 : adjustedIndex];
+  const img = images[adjustedIndex < 0 ? 0 : adjustedIndex];
   return img?.url ?? null;
 }
 
