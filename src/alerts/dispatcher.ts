@@ -33,6 +33,19 @@ async function sendEmail(config: AlertConfig, subject: string, html: string, tex
   }
 }
 
+// Track last dispatch time per category to prevent spam
+const lastDispatchedAt = new Map<string, number>();
+
+// Only these categories warrant immediate email. Everything else is logged only.
+const EMAIL_WORTHY_CATEGORIES = new Set([
+  'missing_orders',       // Orders not synced — customer impact
+  'stock_drift',          // Inventory mismatch above critical threshold
+  'full_audit',           // Nightly audit results (once per day)
+]);
+
+// Max one email per category per 6 hours
+const DEDUP_WINDOW_MS = 6 * 3600_000;
+
 export async function dispatchAlerts(config: AlertConfig): Promise<void> {
   const hasWebhook = !!config.webhookUrl;
   const hasEmail = !!config.resendApiKey && !!config.emailTo;
@@ -47,33 +60,44 @@ export async function dispatchAlerts(config: AlertConfig): Promise<void> {
 
   if (undispatched.rows.length === 0) return;
 
-  let consecutiveFailures = 0;
-
   for (const alert of undispatched.rows) {
     try {
+      // Always mark as dispatched to prevent re-processing
+      await query(`UPDATE alerts SET dispatched = TRUE WHERE id = $1`, [alert.id]);
+
+      // Deduplicate: skip if same category was sent recently
+      const lastSent = lastDispatchedAt.get(alert.category) ?? 0;
+      if (Date.now() - lastSent < DEDUP_WINDOW_MS) {
+        logger.debug('Alert suppressed (dedup)', { category: alert.category, alertId: alert.id });
+        continue;
+      }
+
+      // Only email for actionable categories
+      if (!EMAIL_WORTHY_CATEGORIES.has(alert.category)) {
+        logger.info('Alert logged (no email)', { category: alert.category, message: alert.message });
+        continue;
+      }
+
       const emoji = alert.severity === 'critical' ? '\u{1F534}' : alert.severity === 'warning' ? '\u{1F7E1}' : '\u2139\uFE0F';
       const plainText = `[${alert.severity.toUpperCase()}] ${alert.category}: ${alert.message}`;
 
       // Send to webhook (Slack/Discord)
       if (hasWebhook) {
         const text = `${emoji} **[${alert.severity.toUpperCase()}]** ${alert.category}\n${alert.message}`;
-        const response = await fetch(config.webhookUrl!, {
+        await fetch(config.webhookUrl!, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content: text }),
-        });
-        if (!response.ok) {
-          logger.warn('Webhook dispatch failed', { alertId: alert.id, status: response.status });
-        }
+        }).catch(() => {}); // don't throw on webhook failure
       }
 
       // Send email via Resend
       if (hasEmail) {
-        const subject = `${alert.severity === 'critical' ? 'CRITICAL' : alert.severity === 'warning' ? 'Warning' : 'Info'}: Mirakl Connector — ${alert.category}`;
+        const subject = `${alert.severity === 'critical' ? 'CRITICAL' : 'Info'}: Mirakl Connector — ${alert.category}`;
         const metadata = alert.metadata ? JSON.stringify(alert.metadata, null, 2) : '';
         const html = `
           <div style="font-family: sans-serif; max-width: 600px;">
-            <h2 style="color: ${alert.severity === 'critical' ? '#dc2626' : alert.severity === 'warning' ? '#d97706' : '#2563eb'}">
+            <h2 style="color: ${alert.severity === 'critical' ? '#dc2626' : '#2563eb'}">
               ${emoji} ${alert.severity.toUpperCase()}: ${alert.category}
             </h2>
             <p>${alert.message}</p>
@@ -87,16 +111,9 @@ export async function dispatchAlerts(config: AlertConfig): Promise<void> {
         await sendEmail(config, subject, html, `${plainText}\n\n${metadata}`);
       }
 
-      await query(`UPDATE alerts SET dispatched = TRUE WHERE id = $1`, [alert.id]);
-      consecutiveFailures = 0;
+      lastDispatchedAt.set(alert.category, Date.now());
     } catch (err) {
-      consecutiveFailures++;
-      logger.error('Failed to dispatch alert', { alertId: alert.id, error: String(err), consecutiveFailures });
-      if (consecutiveFailures >= 3) {
-        logger.warn('Alert dispatch stopped after 3 consecutive failures, will retry next cycle');
-        break;
-      }
-      continue;
+      logger.error('Failed to dispatch alert', { alertId: alert.id, error: String(err) });
     }
   }
 }
