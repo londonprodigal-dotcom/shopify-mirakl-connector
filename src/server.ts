@@ -71,9 +71,7 @@ export async function startServer(config: AppConfig): Promise<void> {
     }
   });
 
-  // ── Image proxy — resizes to ≥1080px short side + DPI 72 for Mirakl ───────
-  const MIN_SHORT_SIDE = 1080;
-
+  // ── Image proxy — converts to JPEG at 72 DPI for Mirakl compliance ────────
   app.get('/img', async (req, res) => {
     const url = req.query.url as string | undefined;
     if (!url || !url.startsWith('https://cdn.shopify.com/')) {
@@ -81,35 +79,25 @@ export async function startServer(config: AppConfig): Promise<void> {
       return;
     }
     try {
-      const response = await fetch(url);
+      // Request JPEG from Shopify CDN (avoids webp which Mirakl may not support)
+      const jpegUrl = url.includes('format=') ? url
+        : url + (url.includes('?') ? '&' : '?') + 'format=pjpg';
+
+      const response = await fetch(jpegUrl);
       if (!response.ok) {
         res.status(502).json({ error: `Upstream returned ${response.status}` });
         return;
       }
       const buffer = Buffer.from(await response.arrayBuffer());
-      const metadata = await sharp(buffer).metadata();
-      const w = metadata.width ?? 0;
-      const h = metadata.height ?? 0;
-      const shortSide = Math.min(w, h);
 
-      let pipeline = sharp(buffer);
-
-      if (shortSide > 0 && shortSide < MIN_SHORT_SIDE) {
-        // Scale up so the short side hits 1080px, preserving aspect ratio
-        if (w <= h) {
-          pipeline = pipeline.resize({ width: MIN_SHORT_SIDE });
-        } else {
-          pipeline = pipeline.resize({ height: MIN_SHORT_SIDE });
-        }
-      }
-
-      const fixed = await pipeline
+      // Lightweight: only rewrite DPI metadata to 72, no re-encoding or resizing
+      const fixed = await sharp(buffer)
         .withMetadata({ density: 72 })
+        .jpeg({ quality: 90 })
         .toBuffer();
 
-      const contentType = response.headers.get('content-type') ?? 'image/jpeg';
-      res.set('Content-Type', contentType);
-      res.set('Cache-Control', 'public, max-age=86400'); // 24h cache
+      res.set('Content-Type', 'image/jpeg');
+      res.set('Cache-Control', 'public, max-age=86400');
       res.send(fixed);
     } catch (err) {
       logger.error('Image proxy error', { url, error: err instanceof Error ? err.message : String(err) });
