@@ -432,7 +432,7 @@ export class ShopifyClient {
 
     const addr = order.shipping_address;
     const bill = order.billing_address;
-    const email = order.customer.email ?? addr.email ?? bill.email ?? '';
+    const email = order.customer?.email ?? addr?.email ?? bill?.email ?? '';
 
     const payload = {
       order: {
