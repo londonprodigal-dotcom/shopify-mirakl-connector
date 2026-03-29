@@ -73,13 +73,27 @@ export interface MiraklOrderLine {
   order_line_state?: string;
 }
 
+export interface MiraklCustomer {
+  customer_id?: string;
+  firstname?: string;
+  lastname?: string;
+  civility?: string;
+  locale?: string;
+  email?: string;
+  shipping_address?: MiraklOrderAddress;
+  billing_address?: MiraklOrderAddress;
+}
+
 export interface MiraklOrder {
   order_id: string;
+  commercial_id?: string;
   status?: string;
   order_state?: string;
-  customer: MiraklOrderAddress;
-  shipping_address: MiraklOrderAddress;
-  billing_address: MiraklOrderAddress;
+  customer?: MiraklCustomer;
+  customer_notification_email?: string;
+  // Mirakl nests addresses inside customer, but keep top-level as fallback
+  shipping_address?: MiraklOrderAddress;
+  billing_address?: MiraklOrderAddress;
   order_lines: MiraklOrderLine[];
   currency_iso_code: string;
   created_date: string;

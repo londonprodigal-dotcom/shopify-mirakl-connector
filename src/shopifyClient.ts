@@ -430,40 +430,57 @@ export class ShopifyClient {
       throw new Error(`No line items in Mirakl order ${order.order_id}`);
     }
 
-    const addr = order.shipping_address;
-    const bill = order.billing_address;
-    const email = order.customer?.email ?? addr?.email ?? bill?.email ?? '';
+    // Mirakl nests addresses inside customer object, NOT at top level
+    const addr = order.customer?.shipping_address ?? order.shipping_address;
+    const bill = order.customer?.billing_address ?? order.billing_address;
+    const email = order.customer_notification_email
+      ?? order.customer?.email ?? addr?.email ?? bill?.email ?? '';
+
+    // Build address objects with null-safe access — Mirakl can omit these entirely
+    const shippingAddress = addr ? {
+      first_name:   addr.firstname ?? '',
+      last_name:    addr.lastname ?? '',
+      address1:     addr.street_1 ?? '',
+      address2:     addr.street_2 ?? '',
+      city:         addr.city ?? '',
+      zip:          addr.zip_code ?? '',
+      country_code: addr.country ?? addr.country_iso_code ?? 'GB',
+      phone:        addr.phone ?? '',
+    } : undefined;
+
+    const billingAddress = bill ? {
+      first_name:   bill.firstname ?? '',
+      last_name:    bill.lastname ?? '',
+      address1:     bill.street_1 ?? '',
+      address2:     bill.street_2 ?? '',
+      city:         bill.city ?? '',
+      zip:          bill.zip_code ?? '',
+      country_code: bill.country ?? bill.country_iso_code ?? 'GB',
+      phone:        bill.phone ?? '',
+    } : shippingAddress; // Fall back to shipping if billing missing
+
+    // Customer name from the customer object or fall back to address
+    const customerFirstName = order.customer?.firstname ?? addr?.firstname ?? '';
+    const customerLastName  = order.customer?.lastname ?? addr?.lastname ?? '';
 
     const payload = {
       order: {
         line_items:       lineItems,
         email,
-        shipping_address: {
-          first_name: addr.firstname,
-          last_name:  addr.lastname,
-          address1:   addr.street_1,
-          address2:   addr.street_2 ?? '',
-          city:       addr.city,
-          zip:        addr.zip_code,
-          country_code: addr.country ?? addr.country_iso_code ?? 'GB',
-          phone:      addr.phone ?? '',
-        },
-        billing_address: {
-          first_name: bill.firstname,
-          last_name:  bill.lastname,
-          address1:   bill.street_1,
-          address2:   bill.street_2 ?? '',
-          city:       bill.city,
-          zip:        bill.zip_code,
-          country_code: bill.country ?? bill.country_iso_code ?? 'GB',
-          phone:      bill.phone ?? '',
+        ...(shippingAddress && { shipping_address: shippingAddress }),
+        ...(billingAddress  && { billing_address:  billingAddress }),
+        customer: {
+          first_name: customerFirstName,
+          last_name:  customerLastName,
+          email:      email || undefined,
         },
         financial_status:           'paid',
         inventory_behaviour:        'decrement_ignoring_policy',
         send_receipt:               false,
-        send_fulfillment_receipt:   false,
-        tags:   'mirakl,debenhams',
-        note:   `Mirakl order: ${order.order_id}`,
+        send_fulfillment_receipt:   true,
+        source_name:  'Debenhams',
+        tags:         'mirakl,debenhams',
+        note:         `Mirakl order: ${order.order_id} | Debenhams marketplace`,
       },
     };
 
