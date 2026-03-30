@@ -463,6 +463,10 @@ export class ShopifyClient {
     const customerFirstName = order.customer?.firstname ?? addr?.firstname ?? '';
     const customerLastName  = order.customer?.lastname ?? addr?.lastname ?? '';
 
+    // Calculate order total for the external payment transaction
+    const orderTotal = order.total_price
+      ?? order.order_lines.reduce((sum, li) => sum + li.price * li.quantity, 0);
+
     const payload = {
       order: {
         line_items:       lineItems,
@@ -481,6 +485,17 @@ export class ShopifyClient {
         source_name:  'Debenhams',
         tags:         'mirakl,debenhams',
         note:         `Mirakl order: ${order.order_id} | Debenhams marketplace`,
+        shipping_lines: [{
+          title:  'Standard Delivery (Debenhams)',
+          price:  '0.00',
+          code:   'debenhams_standard',
+        }],
+        transactions: [{
+          kind:     'sale',
+          status:   'success',
+          amount:   orderTotal.toFixed(2),
+          gateway:  'Debenhams Marketplace',
+        }],
       },
     };
 
