@@ -5,10 +5,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-
-const CLIENT_ID = '518104b0e8cc61381f290cc656b77859';
-const CLIENT_SECRET = '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';
-const SHOP = 'louchelondon.myshopify.com';
+const { CLIENT_ID, CLIENT_SECRET, SHOP, getAccessToken } = require('./shopify-auth');
 
 const GS1_FILES = [
   path.resolve(__dirname, '../../Downloads/GTIN13-50554830-EN-0A8E-A627-41CE.csv'),
@@ -35,15 +32,6 @@ function parseGS1(filePath) {
 }
 
 function norm(s) { return s.toLowerCase().replace(/[^a-z0-9]/g, ''); }
-
-async function getAccessToken() {
-  const resp = await fetch(`https://${SHOP}/admin/oauth/access_token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, grant_type: 'client_credentials' }),
-  });
-  return (await resp.json()).access_token;
-}
 
 async function fetchAllProducts(token) {
   const QUERY = `

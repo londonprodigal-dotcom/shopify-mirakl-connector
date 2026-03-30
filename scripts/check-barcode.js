@@ -1,13 +1,7 @@
-const CLIENT_ID = '518104b0e8cc61381f290cc656b77859';
-const CLIENT_SECRET = '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';
-const SHOP = 'louchelondon.myshopify.com';
+const { CLIENT_ID, CLIENT_SECRET, SHOP, getAccessToken } = require('./shopify-auth');
 
 (async () => {
-  const tok = await fetch(`https://${SHOP}/admin/oauth/access_token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, grant_type: 'client_credentials' })
-  }).then(r => r.json());
+  const tok = { access_token: await getAccessToken() };
 
   const query = `{
     product(id: "gid://shopify/Product/7966020174045") {

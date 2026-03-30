@@ -7,13 +7,10 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { CLIENT_ID, CLIENT_SECRET, SHOP, getAccessToken } = require('./shopify-auth');
 
 const DRY_RUN = process.argv.includes('--dry-run');
 
-// Louche Shopify Partner App credentials (same as MCP server uses)
-const SHOP_DOMAIN = 'louchelondon.myshopify.com';
-const CLIENT_ID = '518104b0e8cc61381f290cc656b77859';
-const CLIENT_SECRET = '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';
 const API_VERSION = '2024-01';
 
 const GS1_FILES = [
@@ -44,26 +41,8 @@ function norm(s) {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-async function getAccessToken() {
-  const resp = await fetch(`https://${SHOP_DOMAIN}/admin/oauth/access_token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      grant_type: 'client_credentials',
-    }),
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`OAuth token request failed ${resp.status}: ${text}`);
-  }
-  const json = await resp.json();
-  return json.access_token;
-}
-
 async function gql(token, query, variables = {}) {
-  const resp = await fetch(`https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`, {
+  const resp = await fetch(`https://${SHOP}/admin/api/${API_VERSION}/graphql.json`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
