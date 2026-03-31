@@ -509,26 +509,41 @@ export class ShopifyClient {
   // ─── Fetch all inventory levels by SKU (for reconciliation) ────────────────
 
   async fetchAllInventoryLevels(): Promise<Map<string, number>> {
-    interface InventoryResponse {
+    const all = await this.fetchAllInventoryAndPrices();
+    const levels = new Map<string, number>();
+    for (const [sku, data] of all) {
+      levels.set(sku, data.quantity);
+    }
+    return levels;
+  }
+
+  /**
+   * Fetch all variant inventory levels AND prices in a single pass.
+   * Returns Map<sku, { quantity, price, compareAtPrice }>.
+   */
+  async fetchAllInventoryAndPrices(): Promise<Map<string, { quantity: number; price: string; compareAtPrice: string | null }>> {
+    interface InventoryPriceResponse {
       data?: {
         productVariants: {
           pageInfo: { hasNextPage: boolean; endCursor: string | null };
-          edges: Array<{ node: { sku: string; inventoryQuantity: number } }>;
+          edges: Array<{ node: { sku: string; inventoryQuantity: number; price: string; compareAtPrice: string | null } }>;
         };
       };
     }
 
-    const levels = new Map<string, number>();
+    const results = new Map<string, { quantity: number; price: string; compareAtPrice: string | null }>();
     let cursor: string | null = null;
 
-    const INVENTORY_QUERY = `
-      query GetInventory($cursor: String) {
+    const QUERY = `
+      query GetInventoryAndPrices($cursor: String) {
         productVariants(first: 100, after: $cursor, query: "inventory_quantity:>=0") {
           pageInfo { hasNextPage endCursor }
           edges {
             node {
               sku
               inventoryQuantity
+              price
+              compareAtPrice
             }
           }
         }
@@ -536,20 +551,20 @@ export class ShopifyClient {
     `;
 
     do {
-      const result: InventoryResponse = await this.gql<InventoryResponse>(INVENTORY_QUERY, { cursor });
+      const result: InventoryPriceResponse = await this.gql<InventoryPriceResponse>(QUERY, { cursor });
 
       const variants = result.data?.productVariants;
       if (!variants) break;
 
       for (const edge of variants.edges) {
-        const { sku, inventoryQuantity } = edge.node;
-        if (sku) levels.set(sku, inventoryQuantity);
+        const { sku, inventoryQuantity, price, compareAtPrice } = edge.node;
+        if (sku) results.set(sku, { quantity: inventoryQuantity, price, compareAtPrice: compareAtPrice ?? null });
       }
 
       cursor = variants.pageInfo.hasNextPage ? variants.pageInfo.endCursor : null;
     } while (cursor);
 
-    return levels;
+    return results;
   }
 
   /**

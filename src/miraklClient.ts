@@ -236,11 +236,17 @@ export class MiraklClient {
    * Build a minimal OF01 CSV in memory and upload it immediately.
    * Returns the import_id. Callers should verify completion via pollUntilDone().
    */
-  async pushStockUpdate(sku: string, quantity: number): Promise<string | number> {
-    logger.info('Pushing stock update to Mirakl', { sku, quantity });
+  async pushStockUpdate(sku: string, quantity: number, price?: number, discountPrice?: number): Promise<string | number> {
+    logger.info('Pushing stock update to Mirakl', { sku, quantity, price, discountPrice });
 
-    // Build a minimal two-row CSV (header + one data row) entirely in memory
-    const csvContent = `offer-sku\tquantity\tupdate-delete\r\n${sku}\t${quantity}\tU\r\n`;
+    // Build a minimal CSV in memory — include price columns when provided
+    let csvContent: string;
+    if (price !== undefined) {
+      const dpVal = (discountPrice !== undefined && discountPrice > 0) ? discountPrice.toFixed(2) : '';
+      csvContent = `offer-sku\tquantity\tprice\tdiscount-price\tupdate-delete\r\n${sku}\t${quantity}\t${price.toFixed(2)}\t${dpVal}\tU\r\n`;
+    } else {
+      csvContent = `offer-sku\tquantity\tupdate-delete\r\n${sku}\t${quantity}\tU\r\n`;
+    }
     const csvBuffer  = Buffer.from('\uFEFF' + csvContent, 'utf8');
 
     const form = new FormData();

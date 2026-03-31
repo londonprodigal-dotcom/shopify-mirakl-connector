@@ -28,11 +28,11 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
     logger.info('Starting stock reconciliation');
 
     // Fetch from both sides — gracefully skip on rate limit
-    let shopifyLevels: Map<string, number>;
+    let shopifyData: Map<string, { quantity: number; price: string; compareAtPrice: string | null }>;
     let miraklOffers: Array<{ sku: string; quantity: number; price: number }>;
     try {
-      [shopifyLevels, miraklOffers] = await Promise.all([
-        shopify.fetchAllInventoryLevels(),
+      [shopifyData, miraklOffers] = await Promise.all([
+        shopify.fetchAllInventoryAndPrices(),
         mirakl.fetchAllOffers(),
       ]);
     } catch (err: unknown) {
@@ -44,24 +44,34 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
       throw err;
     }
 
-    // Build Mirakl map: sku -> qty
-    const miraklMap = new Map<string, number>();
+    // Build Mirakl map: sku -> { qty, price }
+    const miraklMap = new Map<string, { quantity: number; price: number }>();
     for (const offer of miraklOffers) {
-      if (offer.sku) miraklMap.set(offer.sku, offer.quantity);
+      if (offer.sku) miraklMap.set(offer.sku, { quantity: offer.quantity, price: offer.price });
     }
 
     const { stockBuffer, stockHoldbackLastN } = config.hardening;
     let driftCount = 0;
+    let priceDriftCount = 0;
     let correctionCount = 0;
     const corrections: Array<{ sku: string; expected: number; actual: number }> = [];
 
-    for (const [sku, shopifyQty] of shopifyLevels) {
-      const expectedMiraklQty = applyStockBuffer(shopifyQty, stockBuffer, stockHoldbackLastN);
-      const actualMiraklQty = miraklMap.get(sku);
+    for (const [sku, shopify] of shopifyData) {
+      const expectedMiraklQty = applyStockBuffer(shopify.quantity, stockBuffer, stockHoldbackLastN);
+      const miraklOffer = miraklMap.get(sku);
 
-      if (actualMiraklQty === undefined) continue;
+      if (!miraklOffer) continue;
 
-      const isDrifted = expectedMiraklQty !== actualMiraklQty;
+      // Compute expected Mirakl price using same logic as fieldResolver pricefull/pricesale
+      const compare = parseFloat(shopify.compareAtPrice || '0');
+      const current = parseFloat(shopify.price || '0');
+      const expectedPrice = (compare > current) ? compare : current;
+      const expectedDiscount = (compare > current) ? current : 0;
+
+      const qtyDrifted = expectedMiraklQty !== miraklOffer.quantity;
+      const priceDrifted = Math.abs(expectedPrice - miraklOffer.price) >= 0.01;
+
+      const isDrifted = qtyDrifted || priceDrifted;
 
       // Update stock_ledger
       await query(
@@ -69,18 +79,22 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
          VALUES ($1, $2, $3, $4, NOW(), $5)
          ON CONFLICT (sku) DO UPDATE SET
            shopify_qty = $2, mirakl_qty = $3, buffer_applied = $4, last_verified_at = NOW(), drift_detected = $5`,
-        [sku, shopifyQty, actualMiraklQty, shopifyQty - expectedMiraklQty, isDrifted]
+        [sku, shopify.quantity, miraklOffer.quantity, shopify.quantity - expectedMiraklQty, isDrifted]
       );
 
       if (isDrifted) {
-        driftCount++;
-        corrections.push({ sku, expected: expectedMiraklQty, actual: actualMiraklQty });
+        if (qtyDrifted) driftCount++;
+        if (priceDrifted) priceDriftCount++;
+        corrections.push({ sku, expected: expectedMiraklQty, actual: miraklOffer.quantity });
 
         try {
-          // Push correction and verify it landed
-          const importId = await mirakl.pushStockUpdate(sku, expectedMiraklQty);
-          // Don't poll for each individual correction — too slow for bulk.
-          // Just verify the upload was accepted. Reconciliation will catch any remaining drift next run.
+          // Push correction with price when drifted
+          await mirakl.pushStockUpdate(
+            sku,
+            expectedMiraklQty,
+            priceDrifted ? expectedPrice : undefined,
+            priceDrifted && expectedDiscount > 0 ? expectedDiscount : undefined
+          );
           correctionCount++;
 
           await query(
@@ -89,7 +103,7 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
           );
         } catch (err) {
           // Log but continue — don't abort entire reconciliation for one SKU failure
-          logger.error('Failed to push stock correction', { sku, error: err instanceof Error ? err.message : String(err) });
+          logger.error('Failed to push stock/price correction', { sku, error: err instanceof Error ? err.message : String(err) });
         }
       }
     }
@@ -100,9 +114,10 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
        ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
       [JSON.stringify({
         at: new Date().toISOString(),
-        shopifySkus: shopifyLevels.size,
+        shopifySkus: shopifyData.size,
         miraklOffers: miraklOffers.length,
         driftCount,
+        priceDriftCount,
         correctionCount,
       })]
     );
@@ -111,13 +126,13 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
       await query(
         `INSERT INTO alerts (severity, category, message, metadata) VALUES ('critical', 'stock_drift', $1, $2)`,
         [
-          `Stock reconciliation found ${driftCount} drifted SKUs (threshold: ${config.hardening.driftCriticalCount})`,
-          JSON.stringify({ driftCount, correctionCount, samples: corrections.slice(0, 5) }),
+          `Stock reconciliation found ${driftCount} qty drifts + ${priceDriftCount} price drifts (threshold: ${config.hardening.driftCriticalCount})`,
+          JSON.stringify({ driftCount, priceDriftCount, correctionCount, samples: corrections.slice(0, 5) }),
         ]
       );
     }
 
-    logger.info('Stock reconciliation complete', { driftCount, correctionCount, shopifySkus: shopifyLevels.size, miraklOffers: miraklOffers.length });
+    logger.info('Stock reconciliation complete', { driftCount, priceDriftCount, correctionCount, shopifySkus: shopifyData.size, miraklOffers: miraklOffers.length });
   } finally {
     // Always release advisory lock
     await query(`SELECT pg_advisory_unlock($1)`, [STOCK_RECONCILE_LOCK_ID]);

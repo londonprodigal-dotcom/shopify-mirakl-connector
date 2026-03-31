@@ -29,14 +29,14 @@ export async function startWorker(): Promise<void> {
   await updateHeartbeat(workerId);
 
   // Schedule recurring reconciliation jobs
-  // Order reconcile is highest priority — must run frequently for order SLA
-  scheduleRecurring('order_reconcile', config.hardening.reconcileOrderIntervalMs);
+  // Order reconcile — 10min is plenty for ~6 orders/day (was 2min, hammered rate limits)
+  scheduleRecurring('order_reconcile', Math.max(config.hardening.reconcileOrderIntervalMs, 600_000));
   // Stock reconcile every hour (not 15 min — avoids Mirakl rate limits)
   scheduleRecurring('stock_reconcile', Math.max(config.hardening.reconcileStockIntervalMs, 3_600_000));
   // Check pending PA01 imports every 5min
   scheduleRecurring('check_import', 300_000);
-  // CM11 product status check every 4 hours (was 30min — too aggressive for rate limits)
-  scheduleRecurring('catalog_monitor', 14_400_000);
+  // CM11 product status check once per day (was 4h — rate limit budget better spent on stock_reconcile)
+  scheduleRecurring('catalog_monitor', 86_400_000);
   scheduleNightlyAudit(config.hardening.fullAuditHourUtc);
 
   // Alert dispatcher (every 30s) — sends to webhook and/or email via Resend
