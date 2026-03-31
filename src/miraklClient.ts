@@ -282,85 +282,88 @@ export class MiraklClient {
   // See: https://help.mirakl.com/docs/sellers/offer-apis-list
 
   async fetchAllOffers(): Promise<Array<{ sku: string; quantity: number; price: number }>> {
-    // OF52 — Request async offer export
+    // OF52 — Request async offer export (POST /api/offers/export/async)
     logger.info('Requesting async offer export (OF52)');
-    const { data: exportData } = await this.http.post<{ export_id: string }>(
-      '/api/offers/export',
-      null,
-      { params: this.shopParam() }
+    const { data: exportData } = await this.http.post<{ tracking_id: string }>(
+      '/api/offers/export/async',
+      {},
+      { headers: { 'Content-Type': 'application/json' } }
     );
-    const exportId = exportData.export_id;
-    logger.info('Offer export requested', { exportId });
+    const trackingId = exportData.tracking_id;
+    logger.info('Offer export requested', { trackingId });
 
-    // OF53 — Poll until export is complete
+    // OF53 — Poll until export is complete (GET /api/offers/export/async/status/{tracking_id})
     const maxPollMs = 300_000; // 5 min max wait
-    const pollIntervalMs = 5_000;
+    const pollIntervalMs = 10_000; // Mirakl max: every 10s, recommended: every 60s
     const startedAt = Date.now();
 
+    let downloadUrls: string[] = [];
+
     while (true) {
-      const { data: status } = await this.http.get<{ status: string }>(
-        `/api/offers/export/${exportId}`,
-        { params: this.shopParam() }
+      const { data: status } = await this.http.get<{ status: string; urls?: string[]; error?: { code: string; detail: string } }>(
+        `/api/offers/export/async/status/${trackingId}`
       );
 
-      if (status.status === 'COMPLETE' || status.status === 'COMPLETED') {
-        logger.info('Offer export complete', { exportId });
+      if (status.status === 'COMPLETED') {
+        downloadUrls = status.urls ?? [];
+        logger.info('Offer export complete', { trackingId, chunks: downloadUrls.length });
         break;
       }
 
       if (status.status === 'FAILED') {
-        throw new Error(`Offer export failed (OF53): exportId=${exportId}`);
+        throw new Error(`Offer export failed (OF53): ${status.error?.detail ?? 'unknown error'}`);
       }
 
       if (Date.now() - startedAt > maxPollMs) {
         throw new Error(`Offer export timed out after ${maxPollMs / 1000}s (status: ${status.status})`);
       }
 
-      logger.info('Offer export still processing', { exportId, status: status.status });
+      logger.info('Offer export still processing', { trackingId, status: status.status });
       await new Promise(r => setTimeout(r, pollIntervalMs));
     }
 
-    // OF54 — Download export result
-    logger.info('Downloading offer export (OF54)', { exportId });
-    const { data: csvData } = await this.http.get<string>(
-      `/api/offers/export/${exportId}/download`,
-      {
-        params: this.shopParam(),
-        responseType: 'text' as const,
-      }
-    );
-
-    // Parse CSV (semicolon or tab delimited, first row is headers)
-    const lines = csvData.split(/\r?\n/).filter(l => l.trim());
-    if (lines.length < 2) {
-      logger.warn('Offer export returned no data rows', { exportId });
+    if (downloadUrls.length === 0) {
+      logger.warn('Offer export returned no download URLs', { trackingId });
       return [];
     }
 
-    const delimiter = lines[0].includes('\t') ? '\t' : ';';
-    const headers = lines[0].split(delimiter).map(h => h.replace(/^"|"$/g, '').toLowerCase().trim());
-    const skuIdx = headers.findIndex(h => h === 'sku' || h === 'offer-sku' || h === 'shop-sku');
-    const qtyIdx = headers.findIndex(h => h === 'quantity');
-    const priceIdx = headers.findIndex(h => h === 'price');
-
-    if (skuIdx < 0 || priceIdx < 0) {
-      logger.error('Offer export CSV missing required columns', { headers: headers.slice(0, 20) });
-      throw new Error('Offer export CSV missing sku or price column');
-    }
-
+    // OF54 — Download each chunk (URLs returned by OF53)
     const offers: Array<{ sku: string; quantity: number; price: number }> = [];
-    for (let i = 1; i < lines.length; i++) {
-      const cols = lines[i].split(delimiter).map(c => c.replace(/^"|"$/g, ''));
-      const sku = cols[skuIdx] ?? '';
-      if (!sku) continue;
-      offers.push({
-        sku,
-        quantity: qtyIdx >= 0 ? parseInt(cols[qtyIdx] ?? '0', 10) : 0,
-        price: parseFloat(cols[priceIdx] ?? '0'),
+
+    for (const url of downloadUrls) {
+      logger.info('Downloading offer export chunk (OF54)', { url: url.substring(0, 100) });
+      const { data: csvData } = await this.http.get<string>(url, {
+        responseType: 'text' as const,
       });
+
+      // Parse CSV (semicolon-delimited, first row is headers)
+      const lines = csvData.split(/\r?\n/).filter(l => l.trim());
+      if (lines.length < 2) continue;
+
+      const delimiter = lines[0].includes('\t') ? '\t' : ';';
+      const headers = lines[0].split(delimiter).map(h => h.replace(/^"|"$/g, '').toLowerCase().trim());
+      const skuIdx = headers.findIndex(h => h === 'shop-sku');
+      const qtyIdx = headers.findIndex(h => h === 'quantity');
+      const priceIdx = headers.findIndex(h => h === 'price');
+
+      if (skuIdx < 0 || priceIdx < 0) {
+        logger.error('Offer export CSV missing required columns', { headers: headers.slice(0, 20) });
+        throw new Error('Offer export CSV missing shop-sku or price column');
+      }
+
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(delimiter).map(c => c.replace(/^"|"$/g, ''));
+        const sku = cols[skuIdx] ?? '';
+        if (!sku) continue;
+        offers.push({
+          sku,
+          quantity: qtyIdx >= 0 ? parseInt(cols[qtyIdx] ?? '0', 10) : 0,
+          price: parseFloat(cols[priceIdx] ?? '0'),
+        });
+      }
     }
 
-    logger.info('Offer export parsed', { exportId, offerCount: offers.length });
+    logger.info('Offer export parsed', { trackingId, offerCount: offers.length });
     return offers;
   }
 
