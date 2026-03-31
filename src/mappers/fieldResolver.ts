@@ -130,7 +130,7 @@ export function resolveField(
       // Extract just the fabric + care instructions
       const careVal = resolveFieldPath(param, product, variant);
       if (!careVal) return null;
-      return splitDescription(String(careVal)).care;
+      return sanitizeBannedWords(splitDescription(String(careVal)).care);
     }
 
     case 'title70': {
@@ -406,15 +406,25 @@ function splitDescription(text: string): { description: string; care: string } {
 
 // Debenhams blocks certain words in titles and descriptions.
 // "louche" is the brand name — Debenhams requires brand-free titles (brand is set via collection field).
+// Words to replace with a specific substitution (before banned word removal)
+const WORD_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/\blenzing\s+viscose\b/gi, 'Viscose'],   // "LENZING VISCOSE" → "Viscose"
+  [/\blenzing\b/gi, 'Viscose'],              // standalone "LENZING" → "Viscose"
+];
+
 const BANNED_WORDS = [
   'louche',
   'sustainable', 'eco-friendly', 'eco friendly', 'eco', 'recycled',
-  'organic', 'lenzing', 'environmentally', 'chanel', 'chloe', 'alexa',
+  'organic', 'environmentally', 'chanel', 'chloe', 'alexa',
   'courtney',
 ];
 
 function sanitizeBannedWords(text: string): string {
   let result = text;
+  // Apply replacements first (order matters — "lenzing viscose" before "lenzing")
+  for (const [regex, replacement] of WORD_REPLACEMENTS) {
+    result = result.replace(regex, replacement);
+  }
   for (const word of BANNED_WORDS) {
     // Case-insensitive whole-word replacement
     const regex = new RegExp(`\\b${word.replace(/-/g, '[-\\s]?')}\\b`, 'gi');
