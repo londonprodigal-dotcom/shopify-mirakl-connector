@@ -277,29 +277,90 @@ export class MiraklClient {
     return order;
   }
 
-  // ─── Fetch all offers (paginated) ──────────────────────────────────────────
+  // ─── Fetch all offers via async export (OF52 → OF53 → OF54) ────────────────
+  // Replaces synchronous GET /api/offers pagination which triggers 429 rate limits.
+  // See: https://help.mirakl.com/docs/sellers/offer-apis-list
 
   async fetchAllOffers(): Promise<Array<{ sku: string; quantity: number; price: number }>> {
-    const offers: Array<{ sku: string; quantity: number; price: number }> = [];
-    let offset = 0;
-    const max = 100;
+    // OF52 — Request async offer export
+    logger.info('Requesting async offer export (OF52)');
+    const { data: exportData } = await this.http.post<{ export_id: string }>(
+      '/api/offers/export',
+      null,
+      { params: this.shopParam() }
+    );
+    const exportId = exportData.export_id;
+    logger.info('Offer export requested', { exportId });
+
+    // OF53 — Poll until export is complete
+    const maxPollMs = 300_000; // 5 min max wait
+    const pollIntervalMs = 5_000;
+    const startedAt = Date.now();
 
     while (true) {
-      const { data } = await this.http.get('/api/offers', {
-        params: { ...this.shopParam(), max, offset },
-      });
-      const batch = data.offers ?? [];
-      for (const offer of batch) {
-        offers.push({
-          sku: offer.sku ?? offer.offer_sku ?? '',
-          quantity: offer.quantity ?? 0,
-          price: offer.price ?? 0,
-        });
+      const { data: status } = await this.http.get<{ status: string }>(
+        `/api/offers/export/${exportId}`,
+        { params: this.shopParam() }
+      );
+
+      if (status.status === 'COMPLETE' || status.status === 'COMPLETED') {
+        logger.info('Offer export complete', { exportId });
+        break;
       }
-      if (batch.length < max) break;
-      offset += max;
+
+      if (status.status === 'FAILED') {
+        throw new Error(`Offer export failed (OF53): exportId=${exportId}`);
+      }
+
+      if (Date.now() - startedAt > maxPollMs) {
+        throw new Error(`Offer export timed out after ${maxPollMs / 1000}s (status: ${status.status})`);
+      }
+
+      logger.info('Offer export still processing', { exportId, status: status.status });
+      await new Promise(r => setTimeout(r, pollIntervalMs));
     }
 
+    // OF54 — Download export result
+    logger.info('Downloading offer export (OF54)', { exportId });
+    const { data: csvData } = await this.http.get<string>(
+      `/api/offers/export/${exportId}/download`,
+      {
+        params: this.shopParam(),
+        responseType: 'text' as const,
+      }
+    );
+
+    // Parse CSV (semicolon or tab delimited, first row is headers)
+    const lines = csvData.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) {
+      logger.warn('Offer export returned no data rows', { exportId });
+      return [];
+    }
+
+    const delimiter = lines[0].includes('\t') ? '\t' : ';';
+    const headers = lines[0].split(delimiter).map(h => h.replace(/^"|"$/g, '').toLowerCase().trim());
+    const skuIdx = headers.findIndex(h => h === 'sku' || h === 'offer-sku' || h === 'shop-sku');
+    const qtyIdx = headers.findIndex(h => h === 'quantity');
+    const priceIdx = headers.findIndex(h => h === 'price');
+
+    if (skuIdx < 0 || priceIdx < 0) {
+      logger.error('Offer export CSV missing required columns', { headers: headers.slice(0, 20) });
+      throw new Error('Offer export CSV missing sku or price column');
+    }
+
+    const offers: Array<{ sku: string; quantity: number; price: number }> = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(delimiter).map(c => c.replace(/^"|"$/g, ''));
+      const sku = cols[skuIdx] ?? '';
+      if (!sku) continue;
+      offers.push({
+        sku,
+        quantity: qtyIdx >= 0 ? parseInt(cols[qtyIdx] ?? '0', 10) : 0,
+        price: parseFloat(cols[priceIdx] ?? '0'),
+      });
+    }
+
+    logger.info('Offer export parsed', { exportId, offerCount: offers.length });
     return offers;
   }
 
