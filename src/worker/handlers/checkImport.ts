@@ -105,8 +105,26 @@ export async function handleCheckImport(_payload: Record<string, unknown>): Prom
 
   // ─── Upload OF01 (offers) ────────────────────────────────────────────────
   if (offersCsvPath) {
-    logger.info('[check_import] Uploading offers to Mirakl OF01...', { path: offersCsvPath });
-    const offerImportId = await mirakl.uploadOffersFile(offersCsvPath);
+    let actualPath = offersCsvPath;
+
+    // If offers CSV is stored in DB (Railway ephemeral filesystem), write to temp file first
+    if (offersCsvPath === '__DB__') {
+      const csvRow = await query<{ value: string }>(`SELECT value::text FROM sync_state WHERE key = 'pending_offers_csv'`);
+      if (csvRow.rows[0]?.value) {
+        const tmpPath = `/tmp/offers-upload-${Date.now()}.csv`;
+        const fs = await import('fs');
+        fs.writeFileSync(tmpPath, csvRow.rows[0].value, 'utf8');
+        actualPath = tmpPath;
+        logger.info('[check_import] Offers CSV restored from DB', { bytes: csvRow.rows[0].value.length });
+      } else {
+        logger.error('[check_import] Offers CSV marker __DB__ but no data in sync_state');
+        await clearPendingImport();
+        return;
+      }
+    }
+
+    logger.info('[check_import] Uploading offers to Mirakl OF01...', { path: actualPath });
+    const offerImportId = await mirakl.uploadOffersFile(actualPath);
     logger.info('[check_import] OF01 upload accepted', { importId: offerImportId });
 
     const offerResult = await mirakl.pollUntilDone(offerImportId, 'offers');
@@ -121,6 +139,9 @@ export async function handleCheckImport(_payload: Record<string, unknown>): Prom
         await mirakl.downloadErrorReport(offerImportId, 'offers');
       } catch { /* logged inside downloadErrorReport */ }
     }
+
+    // Clean up DB-stored CSV
+    await query(`DELETE FROM sync_state WHERE key = 'pending_offers_csv'`);
   } else {
     logger.info('[check_import] No offers CSV to upload.');
   }

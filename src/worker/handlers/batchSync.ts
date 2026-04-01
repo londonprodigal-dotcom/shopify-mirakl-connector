@@ -115,14 +115,15 @@ export async function handleBatchSync(_payload: Record<string, unknown>): Promis
     const pa01ImportId = await mirakl.uploadProductsFile(productCsvPath);
     logger.info('[batch_sync] PA01 accepted', { importId: pa01ImportId });
 
-    // Move offers CSV to persistent location so check_import can find it after tmpDir cleanup
-    let persistentOfferPath: string | null = null;
+    // Store offers CSV content in Postgres (filesystem is ephemeral on Railway deploys)
     if (offerCsvPath) {
-      const persistDir = path.join(process.cwd(), 'output');
-      fs.mkdirSync(persistDir, { recursive: true });
-      persistentOfferPath = path.join(persistDir, `offers-${Date.now()}.csv`);
-      fs.copyFileSync(offerCsvPath, persistentOfferPath);
-      logger.info('[batch_sync] Offers CSV persisted for check_import', { path: persistentOfferPath });
+      const offersCsvContent = fs.readFileSync(offerCsvPath, 'utf8');
+      await query(
+        `INSERT INTO sync_state (key, value) VALUES ('pending_offers_csv', $1)
+         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+        [offersCsvContent]
+      );
+      logger.info('[batch_sync] Offers CSV stored in DB for check_import', { bytes: offersCsvContent.length });
     }
 
     // Save pending import state to DB (for check_import worker to pick up)
@@ -131,7 +132,7 @@ export async function handleBatchSync(_payload: Record<string, unknown>): Promis
        ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
       [JSON.stringify({
         importId: pa01ImportId,
-        offersCsvPath: persistentOfferPath ?? '',
+        offersCsvPath: '__DB__', // Marker: read from pending_offers_csv in sync_state
         uploadedAt: new Date().toISOString(),
       })]
     );
