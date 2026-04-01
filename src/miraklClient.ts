@@ -243,9 +243,9 @@ export class MiraklClient {
     let csvContent: string;
     if (price !== undefined) {
       const dpVal = (discountPrice !== undefined && discountPrice > 0) ? discountPrice.toFixed(2) : '';
-      csvContent = `offer-sku\tquantity\tprice\tdiscount-price\tupdate-delete\r\n${sku}\t${quantity}\t${price.toFixed(2)}\t${dpVal}\tU\r\n`;
+      csvContent = `sku\tquantity\tprice\tdiscount-price\tupdate-delete\r\n${sku}\t${quantity}\t${price.toFixed(2)}\t${dpVal}\tU\r\n`;
     } else {
-      csvContent = `offer-sku\tquantity\tupdate-delete\r\n${sku}\t${quantity}\tU\r\n`;
+      csvContent = `sku\tquantity\tupdate-delete\r\n${sku}\t${quantity}\tU\r\n`;
     }
     const csvBuffer  = Buffer.from('\uFEFF' + csvContent, 'utf8');
 
@@ -278,8 +278,8 @@ export class MiraklClient {
 
     const hasPrice = corrections.some(c => c.price !== undefined);
     const header = hasPrice
-      ? 'offer-sku\tquantity\tprice\tdiscount-price\tupdate-delete'
-      : 'offer-sku\tquantity\tupdate-delete';
+      ? 'sku\tquantity\tprice\tdiscount-price\tupdate-delete'
+      : 'sku\tquantity\tupdate-delete';
 
     const rows = corrections.map(c => {
       if (hasPrice) {
