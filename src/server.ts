@@ -451,12 +451,14 @@ export async function startServer(config: AppConfig): Promise<void> {
       }
 
       // 3. Find mislinked offers
-      const mislinked: Array<{ shopifySku: string; barcode: string; price: string }> = [];
+      const mislinked: Array<{ shopifySku: string; miraklProductSku: string; price: string }> = [];
       for (const [sku, shopify] of shopifyMap) {
         const mk = miraklMap.get(sku);
         if (!mk) continue;
         if (mk.productSku !== 'M' + shopify.barcode) {
-          mislinked.push({ shopifySku: sku, barcode: shopify.barcode, price: shopify.price });
+          // Use the existing Mirakl product-sku (old EAN) as the product-id for the new offer
+          // The product entry in Mirakl is keyed by the operator-assigned product-sku, not our barcode
+          mislinked.push({ shopifySku: sku, miraklProductSku: mk.productSku, price: shopify.price });
         }
       }
 
@@ -490,7 +492,9 @@ export async function startServer(config: AppConfig): Promise<void> {
         const newSku = m.shopifySku + suffix;
         const mOffer = miraklMap.get(m.shopifySku);
         const qty = mOffer?.quantity ?? 0;
-        rows.push(`${newSku}\t${m.barcode}\tEAN\t${m.price}\t${qty}\t11\t3\tU`);
+        // Use Mirakl's existing product-sku (old EAN) to link to the correct product entry
+        const miraklEan = m.miraklProductSku.replace(/^M/, '');
+        rows.push(`${newSku}\t${miraklEan}\tEAN\t${m.price}\t${qty}\t11\t3\tU`);
       }
 
       const csv = '\uFEFF' + header + '\r\n' + rows.join('\r\n') + '\r\n';
