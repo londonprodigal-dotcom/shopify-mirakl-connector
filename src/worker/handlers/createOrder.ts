@@ -2,6 +2,7 @@ import { loadConfig } from '../../config';
 import { MiraklClient } from '../../miraklClient';
 import { ShopifyClient } from '../../shopifyClient';
 import { withTransaction } from '../../db/pool';
+import { toShopifySku } from '../../utils/skuRemap';
 import { logger } from '../../logger';
 
 const ACTIONABLE_STATES = new Set([
@@ -52,7 +53,7 @@ export async function handleCreateOrder(payload: Record<string, unknown>): Promi
     }
 
     const shopify = new ShopifyClient(config);
-    const shopifyOrder = await shopify.createOrderFromMirakl(order);
+    const shopifyOrder = await shopify.createOrderFromMirakl(order, toShopifySku);
 
     await client.query(
       `UPDATE order_map SET shopify_order_id = $2, shopify_order_name = $3, status = 'created', updated_at = NOW()

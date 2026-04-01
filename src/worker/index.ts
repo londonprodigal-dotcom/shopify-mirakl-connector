@@ -18,6 +18,10 @@ export async function startWorker(): Promise<void> {
   logger.info('Worker starting', { workerId });
   await runMigrations();
 
+  // Load SKU remap cache (for remapped Mirakl offer SKUs)
+  const { loadRemapCache } = await import('../utils/skuRemap');
+  await loadRemapCache();
+
   // Start job poll loop
   pollLoop(workerId, config.hardening.jobPollIntervalMs);
 

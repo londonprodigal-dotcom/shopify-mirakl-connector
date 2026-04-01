@@ -403,7 +403,10 @@ export class ShopifyClient {
 
   // ─── Create a Shopify order from a Mirakl sale ──────────────────────────────
 
-  async createOrderFromMirakl(order: MiraklOrder): Promise<{ id: number; name: string }> {
+  async createOrderFromMirakl(
+    order: MiraklOrder,
+    resolvesku?: (miraklSku: string) => string
+  ): Promise<{ id: number; name: string }> {
     // Resolve ALL offer SKUs to Shopify variant IDs.
     // We reject the entire order if any line item fails to resolve —
     // partial orders are worse than no order (customer gets incomplete shipment).
@@ -411,7 +414,9 @@ export class ShopifyClient {
     const lineItems: Array<{ variant_id: number; quantity: number }> = [];
 
     for (const line of order.order_lines) {
-      const variantId = await this.lookupVariantIdBySku(line.offer_sku);
+      // Resolve remapped SKU (e.g. "FOO-V2" → "FOO") before looking up in Shopify
+      const shopifySku = resolvesku ? resolvesku(line.offer_sku) : line.offer_sku;
+      const variantId = await this.lookupVariantIdBySku(shopifySku);
       if (!variantId) {
         failedSkus.push(line.offer_sku);
         continue;

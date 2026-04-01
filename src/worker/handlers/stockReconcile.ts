@@ -3,6 +3,7 @@ import { MiraklClient } from '../../miraklClient';
 import { ShopifyClient } from '../../shopifyClient';
 import { getPool, query } from '../../db/pool';
 import { applyStockBuffer } from './stockUpdate';
+import { toMiraklSku } from '../../utils/skuRemap';
 import { logger } from '../../logger';
 
 // Advisory lock ID — arbitrary fixed number, must be unique per lock purpose.
@@ -69,7 +70,9 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
 
     for (const [sku, shopify] of shopifyData) {
       const expectedMiraklQty = applyStockBuffer(shopify.quantity, stockBuffer, stockHoldbackLastN);
-      const miraklOffer = miraklMap.get(sku);
+      // Look up using remapped SKU if this offer was recreated with a suffix
+      const miraklSku = toMiraklSku(sku);
+      const miraklOffer = miraklMap.get(miraklSku) ?? miraklMap.get(sku);
 
       if (!miraklOffer) continue;
 
@@ -99,7 +102,7 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
         if (driftSamples.length < 5) driftSamples.push({ sku, expected: expectedMiraklQty, actual: miraklOffer.quantity });
 
         batchCorrections.push({
-          sku,
+          sku: miraklSku,
           quantity: expectedMiraklQty,
           price: priceDrifted ? expectedPrice : undefined,
           discountPrice: priceDrifted && expectedDiscount > 0 ? expectedDiscount : undefined,

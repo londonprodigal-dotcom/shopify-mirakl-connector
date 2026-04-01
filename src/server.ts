@@ -397,6 +397,142 @@ export async function startServer(config: AppConfig): Promise<void> {
     }
   });
 
+  // ── Admin: Fix mislinked offers v2 (suffix SKUs) ────────────────────────────
+  // Detects mislinked offers, creates new offers with -V2 suffix SKUs linked
+  // to correct products. Old offers are left to expire via Mirakl retention.
+  app.post('/admin/fix-linkage-v2', express.json(), async (_req, res) => {
+    try {
+      logger.info('[fix-linkage-v2] Starting');
+
+      // 1. Get Shopify SKU → barcode mapping
+      const allProducts = await shopify.fetchAllProducts();
+      const shopifyMap = new Map<string, { barcode: string; price: string; productTitle: string }>();
+      for (const product of allProducts) {
+        for (const variant of product.variants) {
+          if (variant.sku && variant.barcode) {
+            shopifyMap.set(variant.sku, { barcode: variant.barcode, price: variant.price, productTitle: product.title });
+          }
+        }
+      }
+
+      // 2. Get Mirakl offer→product linkage via OF52
+      const axios = (mirakl as any).http;
+      const exportRes = await axios.post('/api/offers/export/async', {}, { headers: { 'Content-Type': 'application/json' } });
+      const trackingId = exportRes.data.tracking_id;
+      let downloadUrls: string[] = [];
+      const deadline = Date.now() + 120_000;
+      while (Date.now() < deadline) {
+        const s = await axios.get(`/api/offers/export/async/status/${trackingId}`);
+        if (s.data.status === 'COMPLETED') { downloadUrls = s.data.urls ?? []; break; }
+        if (s.data.status === 'FAILED') throw new Error('OF52 failed');
+        await new Promise(r => setTimeout(r, 5000));
+      }
+
+      // Parse OF52 for shop-sku → product-sku + quantity
+      const miraklMap = new Map<string, { productSku: string; quantity: number; price: number }>();
+      for (const url of downloadUrls) {
+        const csvRes = await axios.get(url, { responseType: 'text' as const });
+        const lines = (csvRes.data as string).split(/\r?\n/).filter((l: string) => l.trim());
+        if (lines.length < 2) continue;
+        const delim = lines[0].includes('\t') ? '\t' : ';';
+        const hdrs = lines[0].split(delim).map((h: string) => h.replace(/^"|"$/g, '').toLowerCase().trim());
+        const skuI = hdrs.indexOf('shop-sku');
+        const psI = hdrs.indexOf('product-sku');
+        const qI = hdrs.indexOf('quantity');
+        const pI = hdrs.indexOf('price');
+        for (let i = 1; i < lines.length; i++) {
+          const cols = lines[i].split(delim).map((c: string) => c.replace(/^"|"$/g, ''));
+          if (cols[skuI]) miraklMap.set(cols[skuI], {
+            productSku: cols[psI] ?? '',
+            quantity: qI >= 0 ? parseInt(cols[qI] ?? '0', 10) : 0,
+            price: pI >= 0 ? parseFloat(cols[pI] ?? '0') : 0,
+          });
+        }
+      }
+
+      // 3. Find mislinked offers
+      const mislinked: Array<{ shopifySku: string; barcode: string; price: string }> = [];
+      for (const [sku, shopify] of shopifyMap) {
+        const mk = miraklMap.get(sku);
+        if (!mk) continue;
+        if (mk.productSku !== 'M' + shopify.barcode) {
+          mislinked.push({ shopifySku: sku, barcode: shopify.barcode, price: shopify.price });
+        }
+      }
+
+      logger.info('[fix-linkage-v2] Mislinked offers found', { count: mislinked.length });
+
+      if (mislinked.length === 0) {
+        res.json({ status: 'ok', message: 'No mislinked offers', count: 0 });
+        return;
+      }
+
+      // 4. Insert into sku_remap table
+      const suffix = '-V2';
+      let inserted = 0;
+      for (const m of mislinked) {
+        try {
+          await query(
+            `INSERT INTO sku_remap (shopify_sku, mirakl_sku, suffix, reason)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (shopify_sku) DO NOTHING`,
+            [m.shopifySku, m.shopifySku + suffix, suffix, 'EAN mismatch fix 2026-04-01']
+          );
+          inserted++;
+        } catch { /* skip duplicates */ }
+      }
+
+      // 5. Create new offers with suffixed SKUs via OF01
+      const FormData = require('form-data');
+      const header = 'sku\tproduct-id\tproduct-id-type\tprice\tquantity\tstate\tleadtime-to-ship\tupdate-delete';
+      const rows: string[] = [];
+      for (const m of mislinked) {
+        const newSku = m.shopifySku + suffix;
+        const mOffer = miraklMap.get(m.shopifySku);
+        const qty = mOffer?.quantity ?? 0;
+        rows.push(`${newSku}\t${m.barcode}\tEAN\t${m.price}\t${qty}\t11\t3\tU`);
+      }
+
+      const csv = '\uFEFF' + header + '\r\n' + rows.join('\r\n') + '\r\n';
+      const form = new FormData();
+      form.append('file', Buffer.from(csv, 'utf8'), { filename: 'create-suffixed.csv', contentType: 'text/csv' });
+      const createRes = await axios.post('/api/offers/imports', form, {
+        headers: { ...form.getHeaders() },
+        params: { import_mode: 'NORMAL' },
+      });
+      const createImportId = createRes.data.import_id;
+      logger.info('[fix-linkage-v2] Create import accepted', { importId: createImportId });
+
+      const result = await mirakl.pollUntilDone(createImportId, 'offers');
+
+      // 6. Mark successfully created in sku_remap
+      if (result.lines_in_success > 0) {
+        await query(`UPDATE sku_remap SET new_offer_created = TRUE, updated_at = NOW() WHERE suffix = $1`, [suffix]);
+      }
+
+      // 7. Refresh the in-memory cache
+      const { loadRemapCache } = await import('./utils/skuRemap');
+      await loadRemapCache();
+
+      logger.info('[fix-linkage-v2] Complete', {
+        mislinked: mislinked.length,
+        inserted,
+        linesOk: result.lines_in_success,
+        linesError: result.lines_in_error,
+      });
+
+      res.json({
+        status: 'ok',
+        mislinked: mislinked.length,
+        remapInserted: inserted,
+        createResult: { linesOk: result.lines_in_success, linesError: result.lines_in_error },
+      });
+    } catch (err) {
+      logger.error('[fix-linkage-v2] Failed', { error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Admin: Trigger full resync (PA01 + OF01) on Railway ─────────────────────
   app.post('/admin/trigger-resync', express.json(), async (_req, res) => {
     try {

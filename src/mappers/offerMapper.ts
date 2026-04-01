@@ -3,6 +3,7 @@ import { resolveField } from './fieldResolver';
 import { normaliseHeaderKey, findDescriptor } from './productMapper';
 import { loadConfig } from '../config';
 import { applyStockBuffer } from '../worker/handlers/stockUpdate';
+import { toMiraklSku } from '../utils/skuRemap';
 import { logger } from '../logger';
 
 /**
@@ -106,7 +107,7 @@ function enforceOfferIds(
   const sellerProductKey = find('seller-product-id');
   const sellerArticleKey = find('seller-article-id');
 
-  if (skuKey)           row[skuKey]           = variant.sku;
+  if (skuKey)           row[skuKey]           = toMiraklSku(variant.sku);
   if (sellerProductKey) row[sellerProductKey] = product.numericId;
   if (sellerArticleKey) {
     row[sellerArticleKey] = isSingleVariant ? product.numericId : variant.numericId;
