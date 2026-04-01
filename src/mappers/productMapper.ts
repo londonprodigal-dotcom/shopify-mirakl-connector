@@ -176,13 +176,16 @@ function ensureMinWidth(url: string, minWidth = 1200): string {
  * 1. Request ≥1200px wide from Shopify CDN (ensures source is large enough)
  * 2. Route through image proxy for JPEG conversion + DPI 72 fix
  */
+// Daily cache-buster so Mirakl re-fetches images (proxy now resizes to 1200px)
+const IMAGE_CACHE_BUST = new Date().toISOString().slice(0, 10).replace(/-/g, ''); // YYYYMMDD
+
 function rewriteImageUrls(row: MiraklRow, proxyBaseUrl: string): void {
   const base = proxyBaseUrl.replace(/\/$/, '');
   for (const key of Object.keys(row)) {
     const val = row[key];
     if (typeof val === 'string' && val.startsWith('https://cdn.shopify.com/')) {
       const upsized = ensureMinWidth(val);
-      row[key] = `${base}/img?url=${encodeURIComponent(upsized)}`;
+      row[key] = `${base}/img?url=${encodeURIComponent(upsized)}&v=${IMAGE_CACHE_BUST}`;
     }
   }
 }
