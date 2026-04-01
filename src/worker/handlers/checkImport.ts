@@ -60,7 +60,10 @@ export async function handleCheckImport(_payload: Record<string, unknown>): Prom
   // ─── Still processing — scheduler will re-run in 5 min ─────────────────
   // Known Mirakl bug: status API can stay at SENT even after Mirakl emails completion.
   // If stuck at SENT for >30 min AND linesRead > 0, treat as complete and proceed.
-  const stuckAtSent = status.importStatus === 'SENT' && elapsed > 30 && status.linesRead > 0;
+  // Mirakl's status API frequently stays at SENT after processing is complete.
+  // If status is SENT and linesRead > 0, the import has been processed — proceed immediately.
+  // If SENT with linesRead === 0, allow 5 min for Mirakl to start reading before treating as complete.
+  const stuckAtSent = status.importStatus === 'SENT' && (status.linesRead > 0 || elapsed > 5);
   if (stuckAtSent) {
     logger.warn(`[check_import] PA01 stuck at SENT for ${elapsed}min with ${status.linesRead} lines read — treating as complete (known Mirakl API bug)`);
   } else if (['WAITING', 'RUNNING', 'SENT', 'TRANSFORMATION_WAITING', 'TRANSFORMATION_RUNNING', 'QUEUED'].includes(status.importStatus)) {
