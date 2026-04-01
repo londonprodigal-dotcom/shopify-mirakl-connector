@@ -111,9 +111,11 @@ export async function handleCheckImport(_payload: Record<string, unknown>): Prom
     if (offersCsvPath === '__DB__') {
       const csvRow = await query<{ value: string }>(`SELECT value::text FROM sync_state WHERE key = 'pending_offers_csv'`);
       if (csvRow.rows[0]?.value) {
+        // Value is stored as JSON-encoded string in jsonb column
+        const csvContent = JSON.parse(csvRow.rows[0].value);
         const tmpPath = `/tmp/offers-upload-${Date.now()}.csv`;
         const fs = await import('fs');
-        fs.writeFileSync(tmpPath, csvRow.rows[0].value, 'utf8');
+        fs.writeFileSync(tmpPath, csvContent, 'utf8');
         actualPath = tmpPath;
         logger.info('[check_import] Offers CSV restored from DB', { bytes: csvRow.rows[0].value.length });
       } else {

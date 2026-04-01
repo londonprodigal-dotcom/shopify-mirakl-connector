@@ -115,13 +115,13 @@ export async function handleBatchSync(_payload: Record<string, unknown>): Promis
     const pa01ImportId = await mirakl.uploadProductsFile(productCsvPath);
     logger.info('[batch_sync] PA01 accepted', { importId: pa01ImportId });
 
-    // Store offers CSV content in Postgres (filesystem is ephemeral on Railway deploys)
+    // Store offers CSV content in Postgres as JSON string (value column is jsonb)
     if (offerCsvPath) {
       const offersCsvContent = fs.readFileSync(offerCsvPath, 'utf8');
       await query(
-        `INSERT INTO sync_state (key, value) VALUES ('pending_offers_csv', $1)
-         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
-        [offersCsvContent]
+        `INSERT INTO sync_state (key, value) VALUES ('pending_offers_csv', $1::jsonb)
+         ON CONFLICT (key) DO UPDATE SET value = $1::jsonb, updated_at = NOW()`,
+        [JSON.stringify(offersCsvContent)]
       );
       logger.info('[batch_sync] Offers CSV stored in DB for check_import', { bytes: offersCsvContent.length });
     }
