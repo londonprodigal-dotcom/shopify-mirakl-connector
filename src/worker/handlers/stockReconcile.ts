@@ -21,6 +21,17 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
   }
 
   try {
+    // Check if corrections are paused via admin endpoint
+    const pauseCheck = await query<{ value: unknown }>(
+      `SELECT value FROM sync_state WHERE key = 'corrections_paused'`
+    );
+    const pauseVal = pauseCheck.rows[0]?.value;
+    const isPaused = pauseVal && (typeof pauseVal === 'object' ? (pauseVal as any).paused : JSON.parse(String(pauseVal)).paused);
+    if (isPaused) {
+      logger.info('Stock reconciliation paused via admin — skipping corrections');
+      return;
+    }
+
     const config = loadConfig();
     const shopify = new ShopifyClient(config);
     const mirakl = new MiraklClient(config);

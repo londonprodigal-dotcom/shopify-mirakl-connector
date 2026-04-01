@@ -111,6 +111,166 @@ export async function startServer(config: AppConfig): Promise<void> {
     }
   });
 
+  // ── Admin: Audit offer→product linkage ──────────────────────────────────────
+  // Runs OF52 async export, fetches all Shopify variants, cross-references
+  // to find offers linked to wrong products (SKU→EAN mismatch).
+  app.get('/admin/audit-linkage', async (_req, res) => {
+    try {
+      logger.info('[audit-linkage] Starting linkage audit');
+
+      // 1. Fetch all Mirakl offers via OF52 (async, no rate limit)
+      const miraklOffers = await mirakl.fetchAllOffers();
+      logger.info('[audit-linkage] Mirakl offers fetched', { count: miraklOffers.length });
+
+      // 2. Fetch all Shopify variants (SKU → barcode + title + price)
+      const shopifyData = await shopify.fetchAllInventoryAndPrices();
+      const allProducts = await shopify.fetchAllProducts();
+
+      // Build SKU → { barcode, productTitle, price } map from Shopify
+      const shopifyMap = new Map<string, { barcode: string; productTitle: string; price: string }>();
+      for (const product of allProducts) {
+        for (const variant of product.variants) {
+          if (variant.sku) {
+            shopifyMap.set(variant.sku, {
+              barcode: variant.barcode ?? '',
+              productTitle: product.title,
+              price: variant.price,
+            });
+          }
+        }
+      }
+      logger.info('[audit-linkage] Shopify products fetched', { skuCount: shopifyMap.size });
+
+      // 3. Cross-reference: for each Mirakl offer, check if product_sku matches expected barcode
+      // OF52 CSV has product-sku which is "M" + EAN in Debenhams
+      // We need the full OF52 data with product-sku — refetch with raw CSV parsing
+      const axios = (mirakl as any).http;
+      const exportRes = await axios.post('/api/offers/export/async', {},
+        { headers: { 'Content-Type': 'application/json' } });
+      const trackingId = exportRes.data.tracking_id;
+
+      // Poll OF53
+      let downloadUrls: string[] = [];
+      const deadline = Date.now() + 120_000;
+      while (Date.now() < deadline) {
+        const statusRes = await axios.get(`/api/offers/export/async/status/${trackingId}`);
+        if (statusRes.data.status === 'COMPLETED') {
+          downloadUrls = statusRes.data.urls ?? [];
+          break;
+        }
+        if (statusRes.data.status === 'FAILED') throw new Error('OF52 export failed');
+        await new Promise(r => setTimeout(r, 5000));
+      }
+
+      // Download OF54 and parse
+      const mismatches: Array<{
+        shop_sku: string;
+        mirakl_product_sku: string;
+        mirakl_product_title: string;
+        mirakl_price: number;
+        shopify_barcode: string;
+        shopify_product_title: string;
+        shopify_price: string;
+        issue: string;
+      }> = [];
+      let totalChecked = 0;
+
+      for (const url of downloadUrls) {
+        const csvRes = await axios.get(url, { responseType: 'text' as const });
+        const lines = (csvRes.data as string).split(/\r?\n/).filter((l: string) => l.trim());
+        if (lines.length < 2) continue;
+
+        const delimiter = lines[0].includes('\t') ? '\t' : ';';
+        const headers = lines[0].split(delimiter).map((h: string) => h.replace(/^"|"$/g, '').toLowerCase().trim());
+        const skuIdx = headers.indexOf('shop-sku');
+        const prodSkuIdx = headers.indexOf('product-sku');
+        const titleIdx = headers.indexOf('product-title') >= 0 ? headers.indexOf('product-title') : -1;
+        const priceIdx = headers.indexOf('price');
+
+        for (let i = 1; i < lines.length; i++) {
+          const cols = lines[i].split(delimiter).map((c: string) => c.replace(/^"|"$/g, ''));
+          const shopSku = cols[skuIdx] ?? '';
+          const miraklProductSku = cols[prodSkuIdx] ?? '';
+          const miraklTitle = titleIdx >= 0 ? (cols[titleIdx] ?? '') : '';
+          const miraklPrice = priceIdx >= 0 ? parseFloat(cols[priceIdx] ?? '0') : 0;
+
+          if (!shopSku) continue;
+          totalChecked++;
+
+          const shopifyInfo = shopifyMap.get(shopSku);
+          if (!shopifyInfo) continue; // SKU not in Shopify, skip
+
+          // Check 1: Does the Mirakl product_sku contain the correct barcode?
+          // Debenhams uses "M" + EAN as product_sku
+          const expectedProductSku = 'M' + shopifyInfo.barcode;
+          const issues: string[] = [];
+
+          if (shopifyInfo.barcode && miraklProductSku && miraklProductSku !== expectedProductSku) {
+            issues.push(`EAN_MISMATCH: mirakl=${miraklProductSku} expected=${expectedProductSku}`);
+          }
+
+          // Check 2: Does the product title match?
+          if (miraklTitle && shopifyInfo.productTitle) {
+            // Strip colour suffix for fuzzy match (titles may differ slightly)
+            const miraklBase = miraklTitle.split(' - ')[0].toLowerCase().trim();
+            const shopifyBase = shopifyInfo.productTitle.split(' - ')[0].toLowerCase().trim();
+            if (miraklBase !== shopifyBase) {
+              issues.push(`TITLE_MISMATCH: mirakl="${miraklTitle}" shopify="${shopifyInfo.productTitle}"`);
+            }
+          }
+
+          if (issues.length > 0) {
+            mismatches.push({
+              shop_sku: shopSku,
+              mirakl_product_sku: miraklProductSku,
+              mirakl_product_title: miraklTitle,
+              mirakl_price: miraklPrice,
+              shopify_barcode: shopifyInfo.barcode,
+              shopify_product_title: shopifyInfo.productTitle,
+              shopify_price: shopifyInfo.price,
+              issue: issues.join(' | '),
+            });
+          }
+        }
+      }
+
+      // Store results in DB for reference
+      await query(
+        `INSERT INTO sync_state (key, value) VALUES ('last_linkage_audit', $1)
+         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+        [JSON.stringify({
+          at: new Date().toISOString(),
+          totalChecked,
+          mismatchCount: mismatches.length,
+        })]
+      );
+
+      logger.info('[audit-linkage] Audit complete', { totalChecked, mismatches: mismatches.length });
+
+      res.json({
+        status: 'ok',
+        totalChecked,
+        mismatchCount: mismatches.length,
+        mismatches: mismatches.slice(0, 200), // Cap response size
+      });
+    } catch (err) {
+      logger.error('[audit-linkage] Audit failed', { error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: 'Audit failed', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ── Admin: Pause/resume price corrections ──────────────────────────────────
+  app.post('/admin/pause-corrections', express.json(), async (req, res) => {
+    const paused = req.body?.paused ?? true;
+    await query(
+      `INSERT INTO sync_state (key, value) VALUES ('corrections_paused', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+      [JSON.stringify({ paused, at: new Date().toISOString() })]
+    );
+    logger.info(`[admin] Corrections ${paused ? 'PAUSED' : 'RESUMED'}`);
+    res.json({ status: 'ok', paused });
+  });
+
   // ── Webhook routes ─────────────────────────────────────────────────────────
   // Note: each handler registers its own body parser middleware at the route
   // level, so raw Buffer and JSON parsing don't interfere with each other.
@@ -130,6 +290,8 @@ export async function startServer(config: AppConfig): Promise<void> {
     logger.info('  GET  /health');
     logger.info('  GET  /health/deep                — Queue stats + worker heartbeat');
     logger.info('  GET  /img?url=<shopify-cdn-url>   — Image proxy (DPI rewrite to 72)');
+    logger.info('  GET  /admin/audit-linkage          — Audit offer→product linkage');
+    logger.info('  POST /admin/pause-corrections      — Pause/resume stock/price corrections');
     logger.info('  POST /webhooks/shopify/inventory   — Shopify stock changes → Mirakl OF01');
     logger.info('  POST /webhooks/mirakl/orders       — Mirakl sale → Shopify order');
     logger.info('  POST /webhooks/shopify/fulfilment  — Shopify fulfilment → Mirakl OR23+OR24');
