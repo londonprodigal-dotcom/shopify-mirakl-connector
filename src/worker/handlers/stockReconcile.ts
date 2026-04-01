@@ -64,8 +64,8 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
     const { stockBuffer, stockHoldbackLastN } = config.hardening;
     let driftCount = 0;
     let priceDriftCount = 0;
-    let correctionCount = 0;
-    const corrections: Array<{ sku: string; expected: number; actual: number }> = [];
+    const driftSamples: Array<{ sku: string; expected: number; actual: number }> = [];
+    const batchCorrections: Array<{ sku: string; quantity: number; price?: number; discountPrice?: number }> = [];
 
     for (const [sku, shopify] of shopifyData) {
       const expectedMiraklQty = applyStockBuffer(shopify.quantity, stockBuffer, stockHoldbackLastN);
@@ -96,26 +96,34 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
       if (isDrifted) {
         if (qtyDrifted) driftCount++;
         if (priceDrifted) priceDriftCount++;
-        corrections.push({ sku, expected: expectedMiraklQty, actual: miraklOffer.quantity });
+        if (driftSamples.length < 5) driftSamples.push({ sku, expected: expectedMiraklQty, actual: miraklOffer.quantity });
 
-        try {
-          // Push correction with price when drifted
-          await mirakl.pushStockUpdate(
-            sku,
-            expectedMiraklQty,
-            priceDrifted ? expectedPrice : undefined,
-            priceDrifted && expectedDiscount > 0 ? expectedDiscount : undefined
-          );
-          correctionCount++;
+        batchCorrections.push({
+          sku,
+          quantity: expectedMiraklQty,
+          price: priceDrifted ? expectedPrice : undefined,
+          discountPrice: priceDrifted && expectedDiscount > 0 ? expectedDiscount : undefined,
+        });
+      }
+    }
 
+    // Push all corrections in a single OF01 CSV upload (not individual calls)
+    let correctionCount = 0;
+    if (batchCorrections.length > 0) {
+      try {
+        const importId = await mirakl.pushBatchUpdate(batchCorrections);
+        correctionCount = batchCorrections.length;
+        logger.info('Batch corrections pushed', { importId, count: correctionCount });
+
+        // Mark all corrected SKUs in ledger
+        for (const c of batchCorrections) {
           await query(
             `UPDATE stock_ledger SET mirakl_qty = $2, last_pushed_at = NOW(), drift_detected = FALSE WHERE sku = $1`,
-            [sku, expectedMiraklQty]
+            [c.sku, c.quantity]
           );
-        } catch (err) {
-          // Log but continue — don't abort entire reconciliation for one SKU failure
-          logger.error('Failed to push stock/price correction', { sku, error: err instanceof Error ? err.message : String(err) });
         }
+      } catch (err) {
+        logger.error('Batch correction failed', { error: err instanceof Error ? err.message : String(err), count: batchCorrections.length });
       }
     }
 
@@ -138,7 +146,7 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
         `INSERT INTO alerts (severity, category, message, metadata) VALUES ('critical', 'stock_drift', $1, $2)`,
         [
           `Stock reconciliation found ${driftCount} qty drifts + ${priceDriftCount} price drifts (threshold: ${config.hardening.driftCriticalCount})`,
-          JSON.stringify({ driftCount, priceDriftCount, correctionCount, samples: corrections.slice(0, 5) }),
+          JSON.stringify({ driftCount, priceDriftCount, correctionCount, samples: driftSamples }),
         ]
       );
     }

@@ -271,6 +271,27 @@ export async function startServer(config: AppConfig): Promise<void> {
     res.json({ status: 'ok', paused });
   });
 
+  // ── Admin: Trigger full resync (PA01 + OF01) on Railway ─────────────────────
+  app.post('/admin/trigger-resync', express.json(), async (_req, res) => {
+    try {
+      // Enqueue a batch_sync job for the worker to process
+      const { enqueueJob } = await import('./queue/enqueue');
+      // Check no batch_sync already pending
+      const existing = await query<{ count: string }>(
+        `SELECT COUNT(*) as count FROM jobs WHERE job_type = 'batch_sync' AND status IN ('pending', 'running')`
+      );
+      if (parseInt(existing.rows[0]?.count ?? '0', 10) > 0) {
+        res.json({ status: 'already_pending', message: 'A batch_sync job is already queued or running' });
+        return;
+      }
+      await enqueueJob('batch_sync', {});
+      logger.info('[admin] batch_sync job enqueued');
+      res.json({ status: 'ok', message: 'batch_sync job enqueued — worker will process PA01 then OF01' });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to enqueue', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Webhook routes ─────────────────────────────────────────────────────────
   // Note: each handler registers its own body parser middleware at the route
   // level, so raw Buffer and JSON parsing don't interfere with each other.

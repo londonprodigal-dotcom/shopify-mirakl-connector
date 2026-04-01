@@ -233,8 +233,8 @@ export class MiraklClient {
   // ─── Push a single-SKU stock update (used by inventory webhook) ────────────
 
   /**
-   * Build a minimal OF01 CSV in memory and upload it immediately.
-   * Returns the import_id. Callers should verify completion via pollUntilDone().
+   * Build a minimal OF01 CSV in memory and upload it immediately (single SKU).
+   * For bulk corrections, use pushBatchUpdate() instead.
    */
   async pushStockUpdate(sku: string, quantity: number, price?: number, discountPrice?: number): Promise<string | number> {
     logger.info('Pushing stock update to Mirakl', { sku, quantity, price, discountPrice });
@@ -262,6 +262,50 @@ export class MiraklClient {
     );
 
     logger.info('Stock update accepted by Mirakl', { importId: data.import_id, sku });
+    return data.import_id;
+  }
+
+  /**
+   * Push a batch of stock/price corrections in a single OF01 CSV upload.
+   * Much more efficient than individual pushStockUpdate calls.
+   */
+  async pushBatchUpdate(
+    corrections: Array<{ sku: string; quantity: number; price?: number; discountPrice?: number }>
+  ): Promise<string | number> {
+    if (corrections.length === 0) return 0;
+
+    logger.info('Pushing batch stock/price update to Mirakl', { count: corrections.length });
+
+    const hasPrice = corrections.some(c => c.price !== undefined);
+    const header = hasPrice
+      ? 'offer-sku\tquantity\tprice\tdiscount-price\tupdate-delete'
+      : 'offer-sku\tquantity\tupdate-delete';
+
+    const rows = corrections.map(c => {
+      if (hasPrice) {
+        const dp = (c.discountPrice !== undefined && c.discountPrice > 0) ? c.discountPrice.toFixed(2) : '';
+        const p = c.price !== undefined ? c.price.toFixed(2) : '';
+        return `${c.sku}\t${c.quantity}\t${p}\t${dp}\tU`;
+      }
+      return `${c.sku}\t${c.quantity}\tU`;
+    });
+
+    const csvContent = '\uFEFF' + header + '\r\n' + rows.join('\r\n') + '\r\n';
+    const csvBuffer = Buffer.from(csvContent, 'utf8');
+
+    const form = new FormData();
+    form.append('file', csvBuffer, {
+      filename: `batch-update-${Date.now()}.csv`,
+      contentType: 'text/csv',
+    });
+
+    const { data } = await this.http.post<{ import_id: string | number }>(
+      '/api/offers/imports',
+      form,
+      { headers: { ...form.getHeaders() }, params: { ...this.shopParam(), import_mode: 'NORMAL' } }
+    );
+
+    logger.info('Batch update accepted by Mirakl', { importId: data.import_id, count: corrections.length });
     return data.import_id;
   }
 
