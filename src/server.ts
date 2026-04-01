@@ -92,9 +92,13 @@ export async function startServer(config: AppConfig): Promise<void> {
       }
       const buffer = Buffer.from(await response.arrayBuffer());
 
-      // Lightweight: only rewrite DPI metadata to 72, no re-encoding or resizing
-      const fixed = await sharp(buffer)
-        .withMetadata({ density: 72 })
+      // Ensure minimum 1200px width for Debenhams, rewrite DPI to 72
+      const metadata = await sharp(buffer).metadata();
+      let pipeline = sharp(buffer).withMetadata({ density: 72 });
+      if (metadata.width && metadata.width < 1200) {
+        pipeline = pipeline.resize({ width: 1200, withoutEnlargement: false });
+      }
+      const fixed = await pipeline
         .jpeg({ quality: 90 })
         .toBuffer();
 

@@ -307,19 +307,11 @@ function resolveOption(
 }
 
 /**
- * Debenhams requires all images to be min 1080px on the short side.
- * Filter out swatches (by URL pattern) and images that are too small.
+ * Filter out swatches by URL pattern.
+ * Undersized images are no longer excluded — the image proxy resizes to 1200px min width.
  */
-const MIN_IMAGE_SHORT_SIDE = 1080;
-
 function isExcludedImage(img: ShopifyImage): boolean {
-  // URL-based swatch detection
   if (/swatch/i.test(img.url)) return true;
-  // Dimension-based filtering (when dimensions are available from GraphQL)
-  if (img.width && img.height) {
-    const shortSide = Math.min(img.width, img.height);
-    if (shortSide < MIN_IMAGE_SHORT_SIDE) return true;
-  }
   return false;
 }
 
