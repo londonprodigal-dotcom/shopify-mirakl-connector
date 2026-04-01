@@ -243,9 +243,9 @@ export class MiraklClient {
     let csvContent: string;
     if (price !== undefined) {
       const dpVal = (discountPrice !== undefined && discountPrice > 0) ? discountPrice.toFixed(2) : '';
-      csvContent = `sku\tquantity\tprice\tdiscount-price\tupdate-delete\r\n${sku}\t${quantity}\t${price.toFixed(2)}\t${dpVal}\tU\r\n`;
+      csvContent = `offer-sku\tquantity\tprice\tdiscount-price\tupdate-delete\r\n${sku}\t${quantity}\t${price.toFixed(2)}\t${dpVal}\tU\r\n`;
     } else {
-      csvContent = `sku\tquantity\tupdate-delete\r\n${sku}\t${quantity}\tU\r\n`;
+      csvContent = `offer-sku\tquantity\tupdate-delete\r\n${sku}\t${quantity}\tU\r\n`;
     }
     const csvBuffer  = Buffer.from('\uFEFF' + csvContent, 'utf8');
 
@@ -278,8 +278,8 @@ export class MiraklClient {
 
     const hasPrice = corrections.some(c => c.price !== undefined);
     const header = hasPrice
-      ? 'sku\tquantity\tprice\tdiscount-price\tupdate-delete'
-      : 'sku\tquantity\tupdate-delete';
+      ? 'offer-sku\tquantity\tprice\tdiscount-price\tupdate-delete'
+      : 'offer-sku\tquantity\tupdate-delete';
 
     const rows = corrections.map(c => {
       if (hasPrice) {
@@ -306,6 +306,27 @@ export class MiraklClient {
     );
 
     logger.info('Batch update accepted by Mirakl', { importId: data.import_id, count: corrections.length });
+
+    // Poll for result to detect silent failures
+    try {
+      const result = await this.pollUntilDone(data.import_id, 'offers');
+      logger.info('Batch update result', {
+        importId: data.import_id,
+        linesOk: result.lines_in_success,
+        linesError: result.lines_in_error,
+      });
+      if (result.lines_in_error > 0) {
+        logger.warn('Batch update had errors', {
+          importId: data.import_id,
+          linesOk: result.lines_in_success,
+          linesError: result.lines_in_error,
+          total: corrections.length,
+        });
+      }
+    } catch (err) {
+      logger.warn('Could not poll batch update result', { error: err instanceof Error ? err.message : String(err) });
+    }
+
     return data.import_id;
   }
 
