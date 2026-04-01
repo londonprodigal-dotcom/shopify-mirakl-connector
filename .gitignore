@@ -5,8 +5,5 @@ output/
 /state/
 reports/*.log
 reports/*-errors.csv
-# Keep template placeholders but not actual templates (they may be proprietary)
-templates/*.xlsx
-templates/*.xls
-templates/*.csv
+# Template files must be deployed to Railway for batch_sync
 !templates/.gitkeep
