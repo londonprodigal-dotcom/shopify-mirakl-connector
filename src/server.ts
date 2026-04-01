@@ -271,6 +271,132 @@ export async function startServer(config: AppConfig): Promise<void> {
     res.json({ status: 'ok', paused });
   });
 
+  // ── Admin: Fix mislinked offers (delete + recreate) ─────────────────────────
+  // Mirakl won't re-link existing offers to different products via OF01.
+  // This endpoint deletes mislinked offers then recreates them correctly.
+  app.post('/admin/fix-linkage', express.json(), async (_req, res) => {
+    try {
+      logger.info('[fix-linkage] Starting mislinked offer fix');
+
+      // 1. Get all Shopify variants (SKU → barcode)
+      const allProducts = await shopify.fetchAllProducts();
+      const shopifyMap = new Map<string, { barcode: string; productTitle: string }>();
+      for (const product of allProducts) {
+        for (const variant of product.variants) {
+          if (variant.sku && variant.barcode) {
+            shopifyMap.set(variant.sku, { barcode: variant.barcode, productTitle: product.title });
+          }
+        }
+      }
+
+      // 2. Get all Mirakl offers via OF52
+      const miraklOffers = await mirakl.fetchAllOffers();
+
+      // 3. Also need product_sku from OF52 raw data to detect mislinks
+      const axios = (mirakl as any).http;
+      const exportRes = await axios.post('/api/offers/export/async', {}, { headers: { 'Content-Type': 'application/json' } });
+      const trackingId = exportRes.data.tracking_id;
+      let downloadUrls: string[] = [];
+      const deadline = Date.now() + 120_000;
+      while (Date.now() < deadline) {
+        const s = await axios.get(`/api/offers/export/async/status/${trackingId}`);
+        if (s.data.status === 'COMPLETED') { downloadUrls = s.data.urls ?? []; break; }
+        if (s.data.status === 'FAILED') throw new Error('OF52 failed');
+        await new Promise(r => setTimeout(r, 5000));
+      }
+
+      // Parse OF52 to get shop-sku → product-sku mapping
+      const miraklProductSkuMap = new Map<string, string>();
+      for (const url of downloadUrls) {
+        const csvRes = await axios.get(url, { responseType: 'text' as const });
+        const lines = (csvRes.data as string).split(/\r?\n/).filter((l: string) => l.trim());
+        if (lines.length < 2) continue;
+        const delimiter = lines[0].includes('\t') ? '\t' : ';';
+        const headers = lines[0].split(delimiter).map((h: string) => h.replace(/^"|"$/g, '').toLowerCase().trim());
+        const skuIdx = headers.indexOf('shop-sku');
+        const prodSkuIdx = headers.indexOf('product-sku');
+        if (skuIdx < 0 || prodSkuIdx < 0) continue;
+        for (let i = 1; i < lines.length; i++) {
+          const cols = lines[i].split(delimiter).map((c: string) => c.replace(/^"|"$/g, ''));
+          if (cols[skuIdx]) miraklProductSkuMap.set(cols[skuIdx], cols[prodSkuIdx] ?? '');
+        }
+      }
+
+      // 4. Find mislinked offers
+      const mislinked: string[] = [];
+      for (const [sku, shopify] of shopifyMap) {
+        const miraklProdSku = miraklProductSkuMap.get(sku);
+        if (!miraklProdSku) continue;
+        const expectedProdSku = 'M' + shopify.barcode;
+        if (miraklProdSku !== expectedProdSku) {
+          mislinked.push(sku);
+        }
+      }
+
+      logger.info('[fix-linkage] Found mislinked offers', { count: mislinked.length });
+
+      if (mislinked.length === 0) {
+        res.json({ status: 'ok', message: 'No mislinked offers found', mislinkedCount: 0 });
+        return;
+      }
+
+      // 5. Delete mislinked offers (OF01 with update-delete=D)
+      const deleteRows = mislinked.map(sku => `${sku}\tD`);
+      const deleteCsv = '\uFEFF' + 'offer-sku\tupdate-delete\r\n' + deleteRows.join('\r\n') + '\r\n';
+      const FormData = require('form-data');
+      const deleteForm = new FormData();
+      deleteForm.append('file', Buffer.from(deleteCsv, 'utf8'), { filename: 'delete-mislinked.csv', contentType: 'text/csv' });
+      const deleteRes = await axios.post('/api/offers/imports', deleteForm, {
+        headers: { ...deleteForm.getHeaders() },
+        params: { import_mode: 'NORMAL' },
+      });
+      const deleteImportId = deleteRes.data.import_id;
+      logger.info('[fix-linkage] Delete import accepted', { importId: deleteImportId, count: mislinked.length });
+
+      // Poll until delete completes
+      const pollResult = await mirakl.pollUntilDone(deleteImportId, 'offers');
+      logger.info('[fix-linkage] Delete result', { linesOk: pollResult.lines_in_success, linesError: pollResult.lines_in_error });
+
+      // 6. Wait a moment then recreate with correct product-id
+      await new Promise(r => setTimeout(r, 5000));
+
+      // Build recreate CSV with correct EANs
+      const recreateHeader = 'offer-sku\tproduct-id\tproduct-id-type\tprice\tquantity\tstate\tleadtime-to-ship\tupdate-delete';
+      const recreateRows: string[] = [];
+      for (const sku of mislinked) {
+        const shopify = shopifyMap.get(sku);
+        const miraklOffer = miraklOffers.find(o => o.sku === sku);
+        if (!shopify) continue;
+        const price = miraklOffer?.price ?? 0;
+        const qty = miraklOffer?.quantity ?? 0;
+        recreateRows.push(`${sku}\t${shopify.barcode}\tEAN\t${price.toFixed(2)}\t${qty}\t11\t3\tU`);
+      }
+
+      const recreateCsv = '\uFEFF' + recreateHeader + '\r\n' + recreateRows.join('\r\n') + '\r\n';
+      const recreateForm = new FormData();
+      recreateForm.append('file', Buffer.from(recreateCsv, 'utf8'), { filename: 'recreate-fixed.csv', contentType: 'text/csv' });
+      const recreateRes = await axios.post('/api/offers/imports', recreateForm, {
+        headers: { ...recreateForm.getHeaders() },
+        params: { import_mode: 'NORMAL' },
+      });
+      const recreateImportId = recreateRes.data.import_id;
+      logger.info('[fix-linkage] Recreate import accepted', { importId: recreateImportId, count: recreateRows.length });
+
+      const recreateResult = await mirakl.pollUntilDone(recreateImportId, 'offers');
+      logger.info('[fix-linkage] Recreate result', { linesOk: recreateResult.lines_in_success, linesError: recreateResult.lines_in_error });
+
+      res.json({
+        status: 'ok',
+        mislinkedCount: mislinked.length,
+        deleteResult: { linesOk: pollResult.lines_in_success, linesError: pollResult.lines_in_error },
+        recreateResult: { linesOk: recreateResult.lines_in_success, linesError: recreateResult.lines_in_error },
+      });
+    } catch (err) {
+      logger.error('[fix-linkage] Failed', { error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Admin: Trigger full resync (PA01 + OF01) on Railway ─────────────────────
   app.post('/admin/trigger-resync', express.json(), async (_req, res) => {
     try {
