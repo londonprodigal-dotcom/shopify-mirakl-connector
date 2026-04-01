@@ -63,7 +63,7 @@ export async function handleCheckImport(_payload: Record<string, unknown>): Prom
   const stuckAtSent = status.importStatus === 'SENT' && elapsed > 30 && status.linesRead > 0;
   if (stuckAtSent) {
     logger.warn(`[check_import] PA01 stuck at SENT for ${elapsed}min with ${status.linesRead} lines read — treating as complete (known Mirakl API bug)`);
-  } else if (status.importStatus === 'WAITING' || status.importStatus === 'RUNNING' || status.importStatus === 'SENT') {
+  } else if (['WAITING', 'RUNNING', 'SENT', 'TRANSFORMATION_WAITING', 'TRANSFORMATION_RUNNING', 'QUEUED'].includes(status.importStatus)) {
     logger.info(`[check_import] Still ${status.importStatus} (${elapsed}min). Will check again next cycle.`);
     return;
   }
