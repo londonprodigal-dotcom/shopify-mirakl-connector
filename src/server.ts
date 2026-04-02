@@ -538,6 +538,24 @@ export async function startServer(config: AppConfig): Promise<void> {
   });
 
   // ── Admin: Trigger full resync (PA01 + OF01) on Railway ─────────────────────
+  app.post('/admin/trigger-reconcile', express.json(), async (_req, res) => {
+    try {
+      const { enqueueJob } = await import('./queue/enqueue');
+      const existing = await query<{ count: string }>(
+        `SELECT COUNT(*) as count FROM jobs WHERE job_type = 'stock_reconcile' AND status IN ('pending', 'running')`
+      );
+      if (parseInt(existing.rows[0]?.count ?? '0', 10) > 0) {
+        res.json({ status: 'already_pending', message: 'A stock_reconcile job is already queued or running' });
+        return;
+      }
+      await enqueueJob('stock_reconcile', {});
+      logger.info('[admin] stock_reconcile job enqueued');
+      res.json({ status: 'ok', message: 'stock_reconcile job enqueued — will delist non-qualifying offers' });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to enqueue', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   app.post('/admin/trigger-resync', express.json(), async (_req, res) => {
     try {
       // Enqueue a batch_sync job for the worker to process
