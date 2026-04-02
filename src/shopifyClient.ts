@@ -617,8 +617,8 @@ export class ShopifyClient {
     let cursor: string | null = null;
     let page = 0;
 
-    // Build Shopify search query
-    const queryParts: string[] = ['status:active'];
+    // Build Shopify search query — only sync products tagged 'debenhams'
+    const queryParts: string[] = ['status:active', 'tag:debenhams'];
     if (since) {
       // Shopify accepts: updated_at:>'2024-01-01T00:00:00Z'
       queryParts.push(`updated_at:>'${since}'`);
