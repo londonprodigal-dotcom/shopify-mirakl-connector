@@ -110,6 +110,27 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
       }
     }
 
+    // ─── Delist non-qualifying offers (not debenhams-tagged) ────────────────
+    // Fetch SKUs from debenhams-tagged products, zero out any Mirakl offer
+    // whose SKU isn't in the qualifying set.
+    let delistCount = 0;
+    try {
+      const qualifyingSkus = await shopify.fetchQualifyingSkus();
+      for (const [sku, miraklOffer] of miraklMap) {
+        if (!qualifyingSkus.has(sku) && miraklOffer.quantity > 0) {
+          batchCorrections.push({ sku, quantity: 0 });
+          delistCount++;
+        }
+      }
+      if (delistCount > 0) {
+        logger.info('Delisting non-qualifying offers', { delistCount });
+      }
+    } catch (err) {
+      logger.error('Failed to fetch qualifying SKUs for delisting', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     // Push all corrections in a single OF01 CSV upload (not individual calls)
     let correctionCount = 0;
     if (batchCorrections.length > 0) {
@@ -141,6 +162,7 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
         driftCount,
         priceDriftCount,
         correctionCount,
+        delistCount,
       })]
     );
 
@@ -154,7 +176,7 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
       );
     }
 
-    logger.info('Stock reconciliation complete', { driftCount, priceDriftCount, correctionCount, shopifySkus: shopifyData.size, miraklOffers: miraklOffers.length });
+    logger.info('Stock reconciliation complete', { driftCount, priceDriftCount, correctionCount, delistCount, shopifySkus: shopifyData.size, miraklOffers: miraklOffers.length });
   } finally {
     // Always release advisory lock
     await query(`SELECT pg_advisory_unlock($1)`, [STOCK_RECONCILE_LOCK_ID]);

@@ -511,6 +511,49 @@ export class ShopifyClient {
     return result.order;
   }
 
+  // ─── Fetch qualifying SKUs (debenhams-tagged products only) ─────────────────
+
+  async fetchQualifyingSkus(): Promise<Set<string>> {
+    const QUERY = `
+      query($cursor: String) {
+        products(first: 100, after: $cursor, query: "status:active AND tag:debenhams") {
+          pageInfo { hasNextPage endCursor }
+          edges { node { variants(first: 100) { edges { node { sku } } } } }
+        }
+      }
+    `;
+
+    interface QualifyingResponse {
+      data?: {
+        products: {
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          edges: Array<{ node: { variants: { edges: Array<{ node: { sku: string | null } }> } } }>;
+        };
+      };
+    }
+
+    const skus = new Set<string>();
+    let cursor: string | null = null;
+
+    do {
+      const result: QualifyingResponse = await this.gql<QualifyingResponse>(QUERY, { cursor });
+
+      const products = result.data?.products;
+      if (!products) break;
+
+      for (const edge of products.edges) {
+        for (const v of edge.node.variants.edges) {
+          if (v.node.sku) skus.add(v.node.sku);
+        }
+      }
+
+      cursor = products.pageInfo.hasNextPage ? products.pageInfo.endCursor : null;
+    } while (cursor);
+
+    logger.info(`Fetched ${skus.size} qualifying SKUs (debenhams-tagged)`);
+    return skus;
+  }
+
   // ─── Fetch all inventory levels by SKU (for reconciliation) ────────────────
 
   async fetchAllInventoryLevels(): Promise<Map<string, number>> {
