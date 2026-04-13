@@ -438,8 +438,11 @@ export class ShopifyClient {
     // Mirakl nests addresses inside customer object, NOT at top level
     const addr = order.customer?.shipping_address ?? order.shipping_address;
     const bill = order.customer?.billing_address ?? order.billing_address;
-    const email = order.customer_notification_email
-      ?? order.customer?.email ?? addr?.email ?? bill?.email ?? '';
+    // Prefer real customer email over Mirakl proxy — proxy emails
+    // (e.g. xxx@notification.mirakl.net) prevent ReturnGO order lookup
+    const email = order.customer?.email ?? addr?.email ?? bill?.email
+      ?? order.customer_notification_email ?? '';
+    const proxyEmail = order.customer_notification_email ?? '';
 
     // Build address objects with null-safe access — Mirakl can omit these entirely
     const shippingAddress = addr ? {
@@ -489,7 +492,8 @@ export class ShopifyClient {
         send_fulfillment_receipt:   true,
         source_name:  'Debenhams',
         tags:         'mirakl,debenhams',
-        note:         `Mirakl order: ${order.order_id} | Debenhams marketplace`,
+        note:         `Mirakl order: ${order.order_id} | Debenhams marketplace` +
+                      (proxyEmail ? ` | Mirakl proxy email: ${proxyEmail}` : ''),
         shipping_lines: [{
           title:  'Standard Delivery (Debenhams)',
           price:  '0.00',
