@@ -438,10 +438,8 @@ export class ShopifyClient {
     // Mirakl nests addresses inside customer object, NOT at top level
     const addr = order.customer?.shipping_address ?? order.shipping_address;
     const bill = order.customer?.billing_address ?? order.billing_address;
-    // Prefer real customer email over Mirakl proxy — proxy emails
-    // (e.g. xxx@notification.mirakl.net) prevent ReturnGO order lookup
-    const email = order.customer?.email ?? addr?.email ?? bill?.email
-      ?? order.customer_notification_email ?? '';
+    const email = order.customer_notification_email
+      ?? order.customer?.email ?? addr?.email ?? bill?.email ?? '';
     const proxyEmail = order.customer_notification_email ?? '';
 
     // Build address objects with null-safe access — Mirakl can omit these entirely
