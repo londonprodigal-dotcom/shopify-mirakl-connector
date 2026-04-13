@@ -488,7 +488,7 @@ export class ShopifyClient {
         },
         financial_status:           'paid',
         inventory_behaviour:        'decrement_ignoring_policy',
-        send_receipt:               false,
+        send_receipt:               true,
         send_fulfillment_receipt:   true,
         source_name:  'Debenhams',
         tags:         'mirakl,debenhams',
