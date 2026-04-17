@@ -111,10 +111,13 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
         }
         if (driftSamples.length < 5 && qtyDrifted) driftSamples.push({ sku, expected: expectedMiraklQty, actual: miraklOffer.quantity });
 
+        // Always include price — Mirakl rejects rows with empty price when the
+        // CSV includes price columns (which happens when ANY row has a price).
+        // For qty-only drifts, send the current Mirakl price to keep it unchanged.
         batchCorrections.push({
           sku: miraklSku,
           quantity: expectedMiraklQty,
-          price: priceDrifted ? expectedBasePrice : undefined,
+          price: priceDrifted ? expectedBasePrice : miraklOffer.price,
           discountPrice: priceDrifted && expectedDiscount > 0 ? expectedDiscount : undefined,
         });
       }

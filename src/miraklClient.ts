@@ -284,6 +284,7 @@ export class MiraklClient {
     const rows = corrections.map(c => {
       if (hasPrice) {
         const dp = (c.discountPrice !== undefined && c.discountPrice > 0) ? c.discountPrice.toFixed(2) : '';
+        // Mirakl requires price on every row when column is present — use 0 placeholder for qty-only
         const p = c.price !== undefined ? c.price.toFixed(2) : '';
         return `${c.sku}\t${c.quantity}\t${p}\t${dp}\tU`;
       }
