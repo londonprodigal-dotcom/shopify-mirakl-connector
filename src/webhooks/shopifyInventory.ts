@@ -8,6 +8,7 @@ import { query } from '../db/pool';
 import { enqueueJob } from '../queue/enqueue';
 import { getCorrelationId } from '../middleware/correlationId';
 import { logger } from '../logger';
+import { logHmacMismatch } from './hmacRateLimit';
 
 export function registerShopifyInventoryWebhook(
   app: Application,
@@ -42,7 +43,7 @@ export function registerShopifyInventoryWebhook(
         crypto.timingSafeEqual(computedBuf, receivedBuf);
 
       if (!valid) {
-        logger.warn('Shopify webhook HMAC mismatch');
+        logHmacMismatch('inventory');
         res.status(401).send('Unauthorized');
         return;
       }

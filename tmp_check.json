@@ -1,0 +1,123 @@
+{
+  "total": 3441,
+  "keys": [
+    "active",
+    "all_prices",
+    "allow_quote_requests",
+    "applicable_pricing",
+    "category_code",
+    "category_label",
+    "channels",
+    "currency_iso_code",
+    "description",
+    "discount",
+    "fulfillment",
+    "inactivity_reasons",
+    "leadtime_to_ship",
+    "logistic_class",
+    "min_quantity_alert",
+    "min_shipping_price",
+    "min_shipping_price_additional",
+    "min_shipping_type",
+    "min_shipping_zone",
+    "msrp",
+    "offer_additional_fields",
+    "offer_id",
+    "price",
+    "price_additional_info",
+    "product_brand",
+    "product_description",
+    "product_references",
+    "product_sku",
+    "product_title",
+    "quantity",
+    "shipping_deadline",
+    "shop_sku",
+    "state_code",
+    "total_price",
+    "warehouses"
+  ],
+  "sample": {
+    "active": true,
+    "all_prices": [
+      {
+        "channel_code": null,
+        "discount_end_date": null,
+        "discount_start_date": null,
+        "price": 70,
+        "unit_discount_price": null,
+        "unit_origin_price": 70,
+        "volume_prices": [
+          {
+            "price": 70,
+            "quantity_threshold": 1,
+            "unit_discount_price": null,
+            "unit_origin_price": 70
+          }
+        ]
+      }
+    ],
+    "allow_quote_requests": false,
+    "applicable_pricing": {
+      "channel_code": null,
+      "discount_end_date": null,
+      "discount_start_date": null,
+      "price": 70,
+      "unit_discount_price": null,
+      "unit_origin_price": 70,
+      "volume_prices": [
+        {
+          "price": 70,
+          "quantity_threshold": 1,
+          "unit_discount_price": null,
+          "unit_origin_price": 70
+        }
+      ]
+    },
+    "category_code": "women-clothing-womens_trousers",
+    "category_label": "Womens Trousers",
+    "channels": [
+      "INIT"
+    ],
+    "currency_iso_code": "GBP",
+    "description": "Perfect for any occasion, these tailored trousers will be your new go-to wardrobe staple! Slider fastening. Elasticated back waist. Straight leg. 2 pockets. 100% COTTON BABY CORD Cool machine wash. Wash with similar colours. Do not bleach. Do not tumble dry. Warm iron on reverse. Model is 5ft 8\"/ 173cm tall and wears size 8UK",
+    "discount": null,
+    "fulfillment": {
+      "center": {
+        "code": "DEFAULT"
+      }
+    },
+    "inactivity_reasons": [],
+    "leadtime_to_ship": 3,
+    "logistic_class": {
+      "code": "INIT",
+      "label": "Default logistic family"
+    },
+    "min_quantity_alert": 5,
+    "min_shipping_price": 0,
+    "min_shipping_price_additional": 0,
+    "min_shipping_type": "ukstandard",
+    "min_shipping_zone": "GB",
+    "msrp": null,
+    "offer_additional_fields": [],
+    "offer_id": 35441337,
+    "price": 70,
+    "price_additional_info": null,
+    "product_brand": "Louche",
+    "product_description": "Perfect for any occasion, these tailored trousers will be your new go-to wardrobe staple! Slider fastening. Elasticated back waist. Straight leg. 2 pockets.",
+    "product_references": [
+      {
+        "reference": "5056695121563",
+        "reference_type": "EAN"
+      }
+    ],
+    "product_sku": "M5056695121563",
+    "product_title": "Tilde Lightweight Baby Cord Wide Leg Trousers - Navy",
+    "quantity": 2,
+    "shipping_deadline": "2026-04-08T22:59:59.999Z",
+    "shop_sku": "TILDE-LIGHT-BABYCORD_NAVY_12",
+    "state_code": "11",
+    "total_price": 70,
+    "warehouses": null
+  }
+}

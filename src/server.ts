@@ -576,6 +576,36 @@ export async function startServer(config: AppConfig): Promise<void> {
     }
   });
 
+  // ── Admin: Debug reconciliation state ─────────────────────────────────────
+  app.get('/admin/debug/reconcile-state', async (_req, res) => {
+    try {
+      const [syncState, driftCount, driftSamples] = await Promise.all([
+        query<{ key: string; value: unknown; updated_at: Date }>(
+          `SELECT key, value, updated_at FROM sync_state WHERE key IN ('last_stock_reconcile', 'last_full_audit', 'corrections_paused') ORDER BY key`
+        ),
+        query<{ cnt: string }>(
+          `SELECT COUNT(*)::text as cnt FROM stock_ledger WHERE drift_detected = true`
+        ),
+        query<{ sku: string; shopify_qty: number; mirakl_qty: number; last_verified_at: Date; last_pushed_at: Date | null }>(
+          `SELECT sku, shopify_qty, mirakl_qty, last_verified_at, last_pushed_at FROM stock_ledger WHERE drift_detected = true ORDER BY last_verified_at DESC LIMIT 20`
+        ),
+      ]);
+
+      const state: Record<string, unknown> = {};
+      for (const row of syncState.rows) {
+        state[row.key] = { value: row.value, updated_at: row.updated_at };
+      }
+
+      res.json({
+        syncState: state,
+        driftCount: parseInt(driftCount.rows[0]?.cnt ?? '0', 10),
+        driftSamples: driftSamples.rows,
+      });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to query', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Webhook routes ─────────────────────────────────────────────────────────
   // Note: each handler registers its own body parser middleware at the route
   // level, so raw Buffer and JSON parsing don't interfere with each other.
@@ -597,6 +627,7 @@ export async function startServer(config: AppConfig): Promise<void> {
     logger.info('  GET  /img?url=<shopify-cdn-url>   — Image proxy (DPI rewrite to 72)');
     logger.info('  GET  /admin/audit-linkage          — Audit offer→product linkage');
     logger.info('  POST /admin/pause-corrections      — Pause/resume stock/price corrections');
+    logger.info('  GET  /admin/debug/reconcile-state  — Last reconcile state + drift count');
     logger.info('  POST /webhooks/shopify/inventory   — Shopify stock changes → Mirakl OF01');
     logger.info('  POST /webhooks/mirakl/orders       — Mirakl sale → Shopify order');
     logger.info('  POST /webhooks/shopify/fulfilment  — Shopify fulfilment → Mirakl OR23+OR24');

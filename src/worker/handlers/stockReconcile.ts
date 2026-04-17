@@ -66,6 +66,7 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
     let driftCount = 0;
     let priceDriftCount = 0;
     const driftSamples: Array<{ sku: string; expected: number; actual: number }> = [];
+    const priceDriftSamples: Array<{ sku: string; expectedPrice: number; miraklPrice: number }> = [];
     const batchCorrections: Array<{ sku: string; quantity: number; price?: number; discountPrice?: number }> = [];
 
     for (const [sku, shopify] of shopifyData) {
@@ -76,14 +77,20 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
 
       if (!miraklOffer) continue;
 
-      // Compute expected Mirakl price using same logic as fieldResolver pricefull/pricesale
+      // Compute expected Mirakl prices using same logic as fieldResolver pricefull/pricesale.
+      // Mirakl's export `price` column = the EFFECTIVE selling price (lowest of base/discount).
+      // OF01 `price` = base price, OF01 `discount-price` = sale price.
+      // So the export's `price` = discount-price when on sale, or base price when not.
       const compare = parseFloat(shopify.compareAtPrice || '0');
       const current = parseFloat(shopify.price || '0');
-      const expectedPrice = (compare > current) ? compare : current;
+      const expectedBasePrice = (compare > current) ? compare : current;
       const expectedDiscount = (compare > current) ? current : 0;
+      // The export `price` column shows the effective selling price (what the customer pays).
+      // That's always the Shopify variant.price (current), regardless of compareAtPrice.
+      const expectedSellingPrice = current;
 
       const qtyDrifted = expectedMiraklQty !== miraklOffer.quantity;
-      const priceDrifted = Math.abs(expectedPrice - miraklOffer.price) >= 0.01;
+      const priceDrifted = Math.abs(expectedSellingPrice - miraklOffer.price) >= 0.01;
 
       const isDrifted = qtyDrifted || priceDrifted;
 
@@ -98,13 +105,16 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
 
       if (isDrifted) {
         if (qtyDrifted) driftCount++;
-        if (priceDrifted) priceDriftCount++;
-        if (driftSamples.length < 5) driftSamples.push({ sku, expected: expectedMiraklQty, actual: miraklOffer.quantity });
+        if (priceDrifted) {
+          priceDriftCount++;
+          if (priceDriftSamples.length < 5) priceDriftSamples.push({ sku, expectedPrice: expectedSellingPrice, miraklPrice: miraklOffer.price });
+        }
+        if (driftSamples.length < 5 && qtyDrifted) driftSamples.push({ sku, expected: expectedMiraklQty, actual: miraklOffer.quantity });
 
         batchCorrections.push({
           sku: miraklSku,
           quantity: expectedMiraklQty,
-          price: priceDrifted ? expectedPrice : undefined,
+          price: priceDrifted ? expectedBasePrice : undefined,
           discountPrice: priceDrifted && expectedDiscount > 0 ? expectedDiscount : undefined,
         });
       }
@@ -113,12 +123,22 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
     // ─── Delist non-qualifying offers (not debenhams-tagged) ────────────────
     // Fetch SKUs from debenhams-tagged products, zero out any Mirakl offer
     // whose SKU isn't in the qualifying set.
+    // Build a set of SKUs already queued for correction to avoid duplicates
+    // (Mirakl rejects OF01 rows with duplicate SKUs in the same file).
+    const correctedSkus = new Set(batchCorrections.map(c => c.sku));
     let delistCount = 0;
     try {
       const qualifyingSkus = await shopify.fetchQualifyingSkus();
       for (const [sku, miraklOffer] of miraklMap) {
         if (!qualifyingSkus.has(sku) && miraklOffer.quantity > 0) {
-          batchCorrections.push({ sku, quantity: 0 });
+          if (correctedSkus.has(sku)) {
+            // Already queued from drift correction — override to qty=0 (delist takes priority)
+            const existing = batchCorrections.find(c => c.sku === sku);
+            if (existing) existing.quantity = 0;
+          } else {
+            // Include current Mirakl price — Mirakl requires price even for qty=0 updates
+            batchCorrections.push({ sku, quantity: 0, price: miraklOffer.price });
+          }
           delistCount++;
         }
       }
@@ -133,10 +153,12 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
 
     // Push all corrections in a single OF01 CSV upload (not individual calls)
     let correctionCount = 0;
+    let importResult: { linesOk?: number; linesError?: number; importId?: string | number } = {};
     if (batchCorrections.length > 0) {
       try {
         const importId = await mirakl.pushBatchUpdate(batchCorrections);
         correctionCount = batchCorrections.length;
+        importResult = { importId };
         logger.info('Batch corrections pushed', { importId, count: correctionCount });
 
         // Mark all corrected SKUs in ledger
@@ -147,7 +169,9 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
           );
         }
       } catch (err) {
-        logger.error('Batch correction failed', { error: err instanceof Error ? err.message : String(err), count: batchCorrections.length });
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error('Batch correction failed', { error: errMsg, count: batchCorrections.length });
+        importResult = { linesOk: 0, linesError: batchCorrections.length };
       }
     }
 
@@ -163,6 +187,8 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
         priceDriftCount,
         correctionCount,
         delistCount,
+        importResult,
+        priceDriftSamples,
       })]
     );
 
@@ -171,7 +197,7 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
         `INSERT INTO alerts (severity, category, message, metadata) VALUES ('critical', 'stock_drift', $1, $2)`,
         [
           `Stock reconciliation found ${driftCount} qty drifts + ${priceDriftCount} price drifts (threshold: ${config.hardening.driftCriticalCount})`,
-          JSON.stringify({ driftCount, priceDriftCount, correctionCount, samples: driftSamples }),
+          JSON.stringify({ driftCount, priceDriftCount, correctionCount, samples: driftSamples, priceSamples: priceDriftSamples }),
         ]
       );
     }

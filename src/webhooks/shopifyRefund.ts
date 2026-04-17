@@ -7,6 +7,7 @@ import { query } from '../db/pool';
 import { enqueueJob } from '../queue/enqueue';
 import { getCorrelationId } from '../middleware/correlationId';
 import { logger } from '../logger';
+import { logHmacMismatch } from './hmacRateLimit';
 
 /**
  * Shopify refund webhook handler (refunds/create).
@@ -77,7 +78,7 @@ export function registerShopifyRefundWebhook(
         crypto.timingSafeEqual(computedBuf, receivedBuf);
 
       if (!valid) {
-        logger.warn('Shopify refund webhook HMAC mismatch');
+        logHmacMismatch('refund');
         res.status(401).send('Unauthorized');
         return;
       }

@@ -36,7 +36,12 @@ export async function handleFullAudit(_payload: Record<string, unknown>): Promis
   );
   const staleOrderCount = parseInt(staleOrders.rows[0]?.count ?? '0', 10);
 
-  // 5. Check stock drift
+  // 5. Clean up stale drift entries (not verified in >7 days — leftover from old linkage fixes)
+  await query(
+    `UPDATE stock_ledger SET drift_detected = FALSE WHERE drift_detected = TRUE AND last_verified_at < NOW() - interval '7 days'`
+  );
+
+  // 6. Check stock drift (only current entries)
   const driftedSkus = await query<{ count: string }>(
     `SELECT COUNT(*) as count FROM stock_ledger WHERE drift_detected = TRUE`
   );

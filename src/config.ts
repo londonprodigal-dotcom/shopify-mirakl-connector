@@ -106,7 +106,7 @@ export function loadConfig(): AppConfig {
       apiVersion,
       graphqlEndpoint: `https://${cleanDomain}/admin/api/${apiVersion}/graphql.json`,
       restBaseUrl:     `https://${cleanDomain}/admin/api/${apiVersion}`,
-      webhookSecret:   optionalEnv('SHOPIFY_WEBHOOK_SECRET', '') ?? '',
+      webhookSecret:   optionalEnv('SHOPIFY_WEBHOOK_SECRET') ?? optionalEnv('SHOPIFY_CLIENT_SECRET') ?? '',
       clientId:        optionalEnv('SHOPIFY_CLIENT_ID'),
       clientSecret:    optionalEnv('SHOPIFY_CLIENT_SECRET'),
     },

@@ -72,6 +72,12 @@ program
       const config = loadConfig();
       const { startServer } = await import('./server');
       await startServer(config);
+      // Also start the worker inline so it shares the same deploy as the server
+      if (config.hardening.databaseUrl) {
+        const { startWorker } = await import('./worker/index');
+        await startWorker();
+        logger.info('Worker started inline with server');
+      }
       // No process.exit — event loop keeps the server alive
     } catch (err) {
       logger.error('Server failed to start', {

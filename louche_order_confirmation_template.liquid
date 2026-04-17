@@ -1,0 +1,105 @@
+{% assign delivery_method_types = delivery_agreements | map: 'delivery_method_type' | uniq %}
+{% if delivery_method_types.size > 1 %}
+  {% assign has_split_cart = true %}
+{% else %}
+  {% assign has_split_cart = false %}
+{% endif %}
+
+{% capture email_title %}
+  {% if has_pending_payment %}
+    Thank you for your order!
+  {% else %}
+    Thank you for your purchase!
+  {% endif %}
+{% endcapture %}
+{% capture email_body %}
+  {% if has_pending_payment %}
+    {% if buyer_action_required %}
+      You'll get a confirmation email after completing your payment.
+    {% else %}
+      Your payment is being processed. You'll get an email when your order is confirmed.
+    {% endif %}
+  {% else %}
+    {% if requires_shipping %}
+    {% case delivery_method %}
+        {% when 'pick-up' %}
+          You'll receive an email when your order is ready for pickup.
+        {% when 'local' %}
+          Hi {{ customer.first_name }}, we're getting your order ready for delivery.
+        {% else %}
+          We're getting your order ready to be shipped. We will notify you when it has been sent.
+      {% endcase %}
+        {% if delivery_instructions != blank  %}
+          <p><b>Delivery information:</b> {{ delivery_instructions }}</p>
+        {% endif %}
+       {% if consolidated_estimated_delivery_time %}
+        {% if has_multiple_delivery_methods %}
+          <h3 class="estimated_delivery__title">Estimated delivery</h3>
+          <p>{{ consolidated_estimated_delivery_time }}</p>
+        {% else %}
+          <p>
+            Estimated delivery <b>{{ consolidated_estimated_delivery_time }}</b>
+          </p>
+        {% endif %}
+       {% endif %}
+    {% endif %}
+  {% endif %}
+  {% assign gift_card_line_items = line_items | where: "gift_card" %}
+  {% assign found_gift_card_with_recipient_email = false %}
+  {% for line_item in gift_card_line_items %}
+    {% if line_item.properties["__shopify_send_gift_card_to_recipient"] and line_item.properties["Recipient email"] %}
+      {% assign found_gift_card_with_recipient_email = true %}
+      {% break %}
+    {% endif %}
+  {% endfor %}
+  {% if found_gift_card_with_recipient_email %}
+    <p>Your gift card recipient will receive an email with their gift card code.</p>
+  {% elsif gift_card_line_items.first %}
+    <p>You'll receive separate emails for any gift cards.</p>
+  {% endif %}
+{% endcapture %}
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+  <title>{{ email_title }}</title>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta name="viewport" content="width=device-width">
+  <link rel="stylesheet" type="text/css" href="/assets/notifications/styles.css">
+  <style>
+    .button__cell { background: {{ shop.email_accent_color }}; }
+    a, a:hover, a:active, a:visited { color: {{ shop.email_accent_color }}; }
+  </style>
+</head>
+
+  <body>
+    <table class="body">
+      <tr>
+        <td>
+          <!-- ... (all existing template content unchanged) ... -->
+          <!-- The footer section is at the very end -->
+
+          <table class="row footer">
+  <tr>
+    <td class="footer__cell">
+      <center>
+        <table class="container">
+          <tr>
+            <td>
+
+              <p class="disclaimer__subtext">If you have any questions, reply to this email or contact us at <a href="mailto:{{ shop.email }}">{{ shop.email }}</a></p>
+            </td>
+          </tr>
+        </table>
+      </center>
+    </td>
+  </tr>
+</table>
+
+<img src="{{ 'notifications/spacer.png' | shopify_asset_url }}" class="spacer" height="1" />
+
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

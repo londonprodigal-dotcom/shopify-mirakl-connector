@@ -7,6 +7,7 @@ import { query } from '../db/pool';
 import { enqueueJob } from '../queue/enqueue';
 import { getCorrelationId } from '../middleware/correlationId';
 import { logger } from '../logger';
+import { logHmacMismatch } from './hmacRateLimit';
 
 /**
  * Shopify fulfilment webhook handler (fulfillments/create + fulfillments/update).
@@ -99,7 +100,7 @@ export function registerShopifyFulfilmentWebhook(
         crypto.timingSafeEqual(computedBuf, receivedBuf);
 
       if (!valid) {
-        logger.warn('Shopify fulfilment webhook HMAC mismatch');
+        logHmacMismatch('fulfilment');
         res.status(401).send('Unauthorized');
         return;
       }
