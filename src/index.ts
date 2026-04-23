@@ -187,6 +187,60 @@ admin
     await closePool();
   });
 
+admin
+  .command('audit-numeric-skus')
+  .description('List Louche variants with legacy numeric SKUs; emit actionable + triage CSVs to stdout')
+  .action(async () => {
+    const { auditNumericSkus } = await import('./admin/auditNumericSkus');
+    await auditNumericSkus();
+  });
+
+admin
+  .command('numeric-sku-mirakl-diff')
+  .description('Intersect numeric-SKU Louche variants with Mirakl offers — surfaces broken Debenhams listings')
+  .action(async () => {
+    const { numericSkuMiraklDiff } = await import('./admin/numericSkuMiraklDiff');
+    await numericSkuMiraklDiff();
+  });
+
+admin
+  .command('diagnose-broken-listings')
+  .description('Classify why sale-tagged Debenhams listings are broken via CM11 cross-check')
+  .action(async () => {
+    const { diagnoseBrokenListings } = await import('./admin/diagnoseBrokenListings');
+    await diagnoseBrokenListings();
+  });
+
+admin
+  .command('bulk-resubmit-broken-listings')
+  .description('Enqueue batch_sync (PA01) for active+debenhams+sale-tagged Louche variants whose numeric SKUs are NOT on Mirakl')
+  .option('--dry-run', 'Show the plan without enqueueing a job', false)
+  .option('--limit <n>', 'Canary: cap to first N products (alphabetical by handle, deterministic)', (v: string) => parseInt(v, 10))
+  .action(async (opts: { dryRun: boolean; limit?: number }) => {
+    const { bulkResubmitBrokenListings } = await import('./admin/bulkResubmitBrokenListings');
+    await bulkResubmitBrokenListings({ dryRun: !!opts.dryRun, limit: opts.limit });
+  });
+
+admin
+  .command('check-louche-sale-collections')
+  .description('Read-only: list sale-related Louche collections and their filter rules (manual/automated)')
+  .action(async () => {
+    const { checkLoucheSaleCollections } = await import('./admin/checkLoucheSaleCollections');
+    await checkLoucheSaleCollections();
+  });
+
+admin
+  .command('strip-debenhams-from-fullprice')
+  .description('Remove `debenhams` tag from Louche active products that are full-price (no sale tag + no variant compareAtPrice > price)')
+  .option('--dry-run', 'Show target set without writing', true)
+  .option('--execute', 'Apply the tag removal via Shopify GraphQL tagsRemove (dry-run off)', false)
+  .option('--trigger-reconcile', 'Also enqueue stock_reconcile so Mirakl auto-delists non-qualifying offers', false)
+  .action(async (opts: { dryRun: boolean; execute: boolean; triggerReconcile: boolean }) => {
+    const dryRun = opts.execute ? false : opts.dryRun;
+    const { stripDebenhamsFromFullprice } = await import('./admin/stripDebenhamsFromFullprice');
+    await stripDebenhamsFromFullprice({ dryRun, triggerReconcile: !!opts.triggerReconcile });
+  });
+
 program.parseAsync(process.argv).catch((err) => {
   logger.error('Unexpected CLI error', { error: String(err) });
   process.exit(1);
