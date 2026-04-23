@@ -18,8 +18,16 @@ import { logger } from '../../logger';
  * polls until complete, then uploads OF01.
  *
  * Triggered via: admin endpoint or scheduled job.
+ *
+ * Accepts optional `payload.skuFilter: string[]` — when present, restricts the
+ * PA01 batch to products that contain at least one variant SKU in the filter.
+ * Used by `admin bulk-resubmit-broken-listings` to surgically re-submit the
+ * broken-listings set without resubmitting the entire Louche catalogue.
  */
-export async function handleBatchSync(_payload: Record<string, unknown>): Promise<void> {
+export async function handleBatchSync(payload: Record<string, unknown>): Promise<void> {
+  const skuFilter = Array.isArray(payload.skuFilter)
+    ? new Set((payload.skuFilter as unknown[]).filter((s): s is string => typeof s === 'string'))
+    : null;
   const config = loadConfig();
   const mapping = loadMappingConfig();
   const shopify = new ShopifyClient(config);
@@ -55,8 +63,16 @@ export async function handleBatchSync(_payload: Record<string, unknown>): Promis
     const offerHeaders = skuIdx > 0 ? outputHeaders.slice(skuIdx) : (templates.offers?.headers ?? []);
 
     // ─── Fetch all Shopify products ───────────────────────────────────────
-    const products = await shopify.fetchAllProducts();
+    let products = await shopify.fetchAllProducts();
     logger.info(`[batch_sync] Fetched ${products.length} products`);
+
+    if (skuFilter) {
+      const before = products.length;
+      products = products.filter(p => p.variants.some(v => v.sku && skuFilter.has(v.sku)));
+      logger.info(`[batch_sync] skuFilter active — ${before} → ${products.length} products`, {
+        filterSize: skuFilter.size,
+      });
+    }
 
     if (products.length === 0) {
       logger.info('[batch_sync] No products to sync');

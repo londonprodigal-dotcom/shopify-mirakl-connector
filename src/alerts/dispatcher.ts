@@ -8,7 +8,7 @@ export interface AlertConfig {
   resendFrom?: string;
 }
 
-async function sendEmail(config: AlertConfig, subject: string, html: string, text: string): Promise<void> {
+export async function sendEmail(config: AlertConfig, subject: string, html: string, text: string): Promise<void> {
   if (!config.resendApiKey || !config.emailTo) return;
 
   const from = config.resendFrom ?? 'Mirakl Connector <onboarding@resend.dev>';

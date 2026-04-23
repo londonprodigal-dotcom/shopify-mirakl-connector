@@ -3,11 +3,11 @@ import { enqueueJob } from '../queue/enqueue';
 
 export async function replayJob(jobId: string): Promise<void> {
   const result = await query<{ id: number; job_type: string; payload: Record<string, unknown> }>(
-    `SELECT id, job_type, payload FROM jobs WHERE id = $1 AND status IN ('failed', 'dead')`,
+    `SELECT id, job_type, payload FROM jobs WHERE id = $1 AND status IN ('failed', 'dead', 'skipped')`,
     [jobId]
   );
   if (!result.rows[0]) {
-    console.log(`Job ${jobId} not found or not in failed/dead state`);
+    console.log(`Job ${jobId} not found or not in failed/dead/skipped state`);
     return;
   }
   const job = result.rows[0];

@@ -2,7 +2,8 @@ import * as os from 'os';
 import { loadConfig } from '../config';
 import { runMigrations } from '../db/migrate';
 import { dequeueJob } from '../queue/dequeue';
-import { markCompleted, markFailed } from '../queue/complete';
+import { markCompleted, markFailed, markSkipped } from '../queue/complete';
+import { TerminalMiraklError } from '../queue/types';
 import { enqueueJob } from '../queue/enqueue';
 import { JobType } from '../queue/types';
 import { processJob } from './processor';
@@ -41,7 +42,13 @@ export async function startWorker(): Promise<void> {
   scheduleRecurring('check_import', 300_000);
   // CM11 product status check once per day (was 4h — rate limit budget better spent on stock_reconcile)
   scheduleRecurring('catalog_monitor', 86_400_000);
+  // Resurrection poller — hourly. Scans pending_catalog for SKUs that have seen a
+  // Shopify webhook since the last sweep; re-enqueues stock_update when Mirakl
+  // now has an active offer for them (PA01-race mitigation).
+  scheduleRecurring('resurrection_poll', 3_600_000);
   scheduleNightlyAudit(config.hardening.fullAuditHourUtc);
+  // Weekly operator triage — Mon 08:00 UTC. HTML digest of open catalog orphans.
+  scheduleWeeklyTriage(8);
 
   // Alert dispatcher (every 30s) — sends to webhook and/or email via Resend
   const alertConfig = {
@@ -88,6 +95,55 @@ async function pollLoop(workerId: string, intervalMs: number): Promise<void> {
           await markCompleted(job.id);
           logger.info('Job completed', { jobId: job.id, type: job.job_type });
         } catch (err) {
+          if (err instanceof TerminalMiraklError) {
+            // Permanent Mirakl rejection — don't burn retries, don't raise critical alert.
+            await markSkipped(job.id, err.message);
+            logger.warn('Job skipped (terminal Mirakl error)', {
+              jobId: job.id, type: job.job_type, code: err.code, sku: err.sku, importId: err.importId,
+              miraklErrorCode: err.miraklErrorCode,
+            });
+            await query(
+              `INSERT INTO alerts (severity, category, message, metadata) VALUES ('info', $1, $2, $3)`,
+              [
+                err.code, // e.g. 'catalog_orphan'
+                `${job.job_type} skipped for ${err.sku ?? 'unknown'}: ${err.message}`,
+                JSON.stringify({
+                  jobId: job.id,
+                  jobType: job.job_type,
+                  code: err.code,
+                  sku: err.sku,
+                  importId: err.importId,
+                  miraklErrorCode: err.miraklErrorCode,
+                  // Raw Mirakl error-report row captured for ground-truth telemetry:
+                  // lets us tune the classifier and spot Mirakl rewording the message.
+                  errorRow: err.errorRow,
+                }),
+              ]
+            );
+
+            // Release B: track this SKU in pending_catalog so the hourly
+            // resurrection poller (and Phase B2 webhook dedupe) can see it.
+            // Idempotent upsert: on repeat terminal errors for the same SKU,
+            // refresh last_qty/last_seen_at, bump attempts, and re-open if
+            // previously resolved (offer went away again).
+            if (err.sku) {
+              const jobPayload = job.payload as Record<string, unknown>;
+              const qty = Number(jobPayload.quantity) || 0;
+              await query(
+                `INSERT INTO pending_catalog (sku, last_qty, error_code, mirakl_error_msg)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (sku) DO UPDATE SET
+                   last_qty         = EXCLUDED.last_qty,
+                   error_code       = EXCLUDED.error_code,
+                   mirakl_error_msg = EXCLUDED.mirakl_error_msg,
+                   last_seen_at     = NOW(),
+                   attempts         = pending_catalog.attempts + 1,
+                   resolved_at      = NULL`,
+                [err.sku, qty, err.code, err.message]
+              );
+            }
+            return;
+          }
           const error = err instanceof Error ? err.message : String(err);
           const outcome = await markFailed(job, error);
           if (outcome === 'dead') {
@@ -157,6 +213,19 @@ async function scheduleNightlyAudit(hourUtc: number): Promise<void> {
   };
   setInterval(check, 60_000); // Check every minute
   logger.info(`Scheduled nightly audit at ${hourUtc}:00 UTC`);
+}
+
+async function scheduleWeeklyTriage(hourUtc: number): Promise<void> {
+  const check = () => {
+    const now = new Date();
+    // UTCDay: Sunday=0, Monday=1. Fire in the first 2 minutes of the target hour
+    // on Monday to make triggering robust to minute-level scheduler drift.
+    if (now.getUTCDay() === 1 && now.getUTCHours() === hourUtc && now.getUTCMinutes() < 2) {
+      enqueueJobIfNotPending('weekly_triage');
+    }
+  };
+  setInterval(check, 60_000);
+  logger.info(`Scheduled weekly triage at Mon ${hourUtc}:00 UTC`);
 }
 
 // ─── External service watchdogs ──────────────────────────────────────────────

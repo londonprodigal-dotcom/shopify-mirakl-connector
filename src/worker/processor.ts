@@ -9,6 +9,8 @@ import { handleCatalogMonitor } from './handlers/catalogMonitor';
 import { handleFulfilmentSync } from './handlers/fulfilmentSync';
 import { handleRefundSync } from './handlers/refundSync';
 import { handleBatchSync } from './handlers/batchSync';
+import { handleResurrectionPoll } from './handlers/resurrectionPoller';
+import { handleWeeklyTriage } from './handlers/weeklyTriage';
 import { logger } from '../logger';
 
 type Handler = (payload: Record<string, unknown>) => Promise<void>;
@@ -24,6 +26,8 @@ const handlers: Record<string, Handler> = {
   catalog_monitor: handleCatalogMonitor,
   fulfilment_sync: handleFulfilmentSync,
   refund_sync: handleRefundSync,
+  resurrection_poll: handleResurrectionPoll,
+  weekly_triage: handleWeeklyTriage,
 };
 
 export async function processJob(job: JobRow): Promise<void> {

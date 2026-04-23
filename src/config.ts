@@ -30,6 +30,10 @@ export interface AppConfig {
     graphqlEndpoint: string;
     restBaseUrl: string;     // https://<domain>/admin/api/<version>
     webhookSecret: string;   // SHOPIFY_WEBHOOK_SECRET — signs incoming webhooks
+    // All shared secrets that may have signed an incoming webhook. Two
+    // Shopify apps are registered on Louche (custom app + OAuth app) and
+    // each signs its own webhooks, so the verifier must try both.
+    webhookSecrets: string[];
     clientId: string | undefined;       // SHOPIFY_CLIENT_ID — for OAuth client credentials flow
     clientSecret: string | undefined;   // SHOPIFY_CLIENT_SECRET — for OAuth client credentials flow
   };
@@ -99,6 +103,12 @@ export function loadConfig(): AppConfig {
 
   const baseUrl = requireEnv('MIRAKL_BASE_URL').replace(/\/$/, '');
 
+  const primaryWebhookSecret = optionalEnv('SHOPIFY_WEBHOOK_SECRET') ?? optionalEnv('SHOPIFY_CLIENT_SECRET') ?? '';
+  const clientSecret = optionalEnv('SHOPIFY_CLIENT_SECRET');
+  const webhookSecretsSet = new Set<string>();
+  if (primaryWebhookSecret) webhookSecretsSet.add(primaryWebhookSecret);
+  if (clientSecret) webhookSecretsSet.add(clientSecret);
+
   return {
     shopify: {
       storeDomain: cleanDomain,
@@ -106,9 +116,10 @@ export function loadConfig(): AppConfig {
       apiVersion,
       graphqlEndpoint: `https://${cleanDomain}/admin/api/${apiVersion}/graphql.json`,
       restBaseUrl:     `https://${cleanDomain}/admin/api/${apiVersion}`,
-      webhookSecret:   optionalEnv('SHOPIFY_WEBHOOK_SECRET') ?? optionalEnv('SHOPIFY_CLIENT_SECRET') ?? '',
+      webhookSecret:   primaryWebhookSecret,
+      webhookSecrets:  Array.from(webhookSecretsSet),
       clientId:        optionalEnv('SHOPIFY_CLIENT_ID'),
-      clientSecret:    optionalEnv('SHOPIFY_CLIENT_SECRET'),
+      clientSecret,
     },
     mirakl: {
       baseUrl,

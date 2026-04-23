@@ -111,14 +111,18 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
         }
         if (driftSamples.length < 5 && qtyDrifted) driftSamples.push({ sku, expected: expectedMiraklQty, actual: miraklOffer.quantity });
 
-        // Always include price — Mirakl rejects rows with empty price when the
-        // CSV includes price columns (which happens when ANY row has a price).
-        // For qty-only drifts, send the current Mirakl price to keep it unchanged.
+        // Always assert the correct (base, discount) pair from Shopify state.
+        // Mirakl OF01 semantics: empty discount-price CLEARS the field. So we
+        // must always populate discount-price when the item is on sale, and we
+        // must always send the BASE price (compareAtPrice for sale items; the
+        // current price for non-sale). The prior fallback `miraklOffer.price`
+        // was the export selling price, not the base — on sale items it would
+        // push base=selling, wiping the strikethrough. Incident 2026-04-20.
         batchCorrections.push({
           sku: miraklSku,
           quantity: expectedMiraklQty,
-          price: priceDrifted ? expectedBasePrice : miraklOffer.price,
-          discountPrice: priceDrifted && expectedDiscount > 0 ? expectedDiscount : undefined,
+          price: expectedBasePrice,
+          discountPrice: expectedDiscount > 0 ? expectedDiscount : undefined,
         });
       }
     }

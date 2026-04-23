@@ -550,25 +550,36 @@ export class MiraklClient {
     logger.info('OR24 – Shipment confirmed', { orderId });
   }
 
-  // ─── OR28 – Request refund on an order line ────────────────────────────────
+  // ─── OR29 – Create refunds on order lines ─────────────────────────────────
 
   /**
-   * Request a refund on Mirakl for one or more order lines.
-   * POST /api/orders/{order_id}/refund
+   * Request refunds on Mirakl. Replaces the deprecated OR28 POST
+   * /api/orders/{order_id}/refund (returns 410 Gone). OR29 is the current
+   * multi-order refund endpoint: PUT /api/orders/refund.
    */
   async requestRefund(
     orderId: string,
-    lines: Array<{ orderLineId: string; quantity: number; reasonCode?: string }>
+    lines: Array<{
+      orderLineId: string;
+      quantity: number;
+      amount: number;
+      currencyIsoCode: string;
+      reasonCode?: string;
+      shippingAmount?: number;
+    }>
   ): Promise<void> {
-    logger.info('OR28 – Requesting refund on Mirakl', { orderId, lineCount: lines.length });
-    await this.http.post(`/api/orders/${orderId}/refund`, {
+    logger.info('OR29 – Requesting refund on Mirakl', { orderId, lineCount: lines.length });
+    await this.http.put('/api/orders/refund', {
       refunds: lines.map(l => ({
-        order_line_id: l.orderLineId,
-        quantity:      l.quantity,
-        reason_code:   l.reasonCode ?? '15',
+        order_line_id:     l.orderLineId,
+        quantity:          l.quantity,
+        amount:            l.amount,
+        currency_iso_code: l.currencyIsoCode,
+        reason_code:       l.reasonCode ?? '17',
+        ...(l.shippingAmount !== undefined ? { shipping_amount: l.shippingAmount } : {}),
       })),
     });
-    logger.info('OR28 – Refund requested successfully', { orderId });
+    logger.info('OR29 – Refund requested successfully', { orderId });
   }
 
   // ─── Convenience: upload + wait + handle errors ────────────────────────────

@@ -8,6 +8,13 @@ export async function markCompleted(jobId: number): Promise<void> {
   );
 }
 
+export async function markSkipped(jobId: number, reason: string): Promise<void> {
+  await query(
+    `UPDATE jobs SET status = 'skipped', last_error = $2, completed_at = NOW(), locked_by = NULL, locked_at = NULL WHERE id = $1`,
+    [jobId, reason]
+  );
+}
+
 export async function markFailed(job: JobRow, error: string): Promise<'retrying' | 'dead'> {
   const config = RETRY_CONFIG[job.job_type];
   const isDead = job.attempts >= job.max_attempts;

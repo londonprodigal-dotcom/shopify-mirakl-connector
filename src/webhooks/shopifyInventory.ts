@@ -9,6 +9,7 @@ import { enqueueJob } from '../queue/enqueue';
 import { getCorrelationId } from '../middleware/correlationId';
 import { logger } from '../logger';
 import { logHmacMismatch } from './hmacRateLimit';
+import { verifyShopifyHmac } from './verifyHmac';
 
 export function registerShopifyInventoryWebhook(
   app: Application,
@@ -20,29 +21,18 @@ export function registerShopifyInventoryWebhook(
     '/webhooks/shopify/inventory',
     raw({ type: 'application/json' }),
     async (req: Request, res: Response): Promise<void> => {
-      // ── 1. Verify HMAC (unchanged) ──────────────────────────────────────────
-      const secret = config.shopify.webhookSecret;
-      const hmac   = req.headers['x-shopify-hmac-sha256'] as string | undefined;
-      const body   = req.body as Buffer;
+      // ── 1. Verify HMAC against any configured secret ───────────────────────
+      const secrets = config.shopify.webhookSecrets;
+      const hmac    = req.headers['x-shopify-hmac-sha256'] as string | undefined;
+      const body    = req.body as Buffer;
 
-      if (!secret) {
-        logger.error('SHOPIFY_WEBHOOK_SECRET not configured');
+      if (secrets.length === 0) {
+        logger.error('No Shopify webhook secrets configured');
         res.status(500).send('Server misconfiguration');
         return;
       }
 
-      const computed = crypto
-        .createHmac('sha256', secret)
-        .update(body)
-        .digest('base64');
-
-      const computedBuf = Buffer.from(computed);
-      const receivedBuf = Buffer.from(hmac ?? '');
-      const valid =
-        computedBuf.length === receivedBuf.length &&
-        crypto.timingSafeEqual(computedBuf, receivedBuf);
-
-      if (!valid) {
+      if (!verifyShopifyHmac(body, hmac, secrets)) {
         logHmacMismatch('inventory');
         res.status(401).send('Unauthorized');
         return;

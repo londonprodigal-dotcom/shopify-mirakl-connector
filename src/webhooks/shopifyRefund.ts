@@ -8,6 +8,7 @@ import { enqueueJob } from '../queue/enqueue';
 import { getCorrelationId } from '../middleware/correlationId';
 import { logger } from '../logger';
 import { logHmacMismatch } from './hmacRateLimit';
+import { verifyShopifyHmac } from './verifyHmac';
 
 /**
  * Shopify refund webhook handler (refunds/create).
@@ -22,6 +23,8 @@ import { logHmacMismatch } from './hmacRateLimit';
 interface ShopifyRefundLineItem {
   line_item_id: number;
   quantity: number;
+  subtotal: string;        // pre-tax line refund amount
+  total_tax: string;
   line_item: {
     id: number;
     sku: string;
@@ -40,8 +43,9 @@ interface ShopifyRefundWebhookPayload {
   transactions: Array<{
     id: number;
     amount: string;
-    kind: string;   // 'refund'
-    status: string; // 'success'
+    kind: string;       // 'refund'
+    status: string;     // 'success'
+    currency: string;   // e.g. 'GBP'
   }>;
 }
 
@@ -55,29 +59,18 @@ export function registerShopifyRefundWebhook(
     '/webhooks/shopify/refund',
     raw({ type: 'application/json' }),
     async (req: Request, res: Response): Promise<void> => {
-      // ── 1. Verify HMAC ──────────────────────────────────────────────────────
-      const secret = config.shopify.webhookSecret;
-      const hmac   = req.headers['x-shopify-hmac-sha256'] as string | undefined;
-      const body   = req.body as Buffer;
+      // ── 1. Verify HMAC against any configured secret ───────────────────────
+      const secrets = config.shopify.webhookSecrets;
+      const hmac    = req.headers['x-shopify-hmac-sha256'] as string | undefined;
+      const body    = req.body as Buffer;
 
-      if (!secret) {
-        logger.error('SHOPIFY_WEBHOOK_SECRET not configured');
+      if (secrets.length === 0) {
+        logger.error('No Shopify webhook secrets configured');
         res.status(500).send('Server misconfiguration');
         return;
       }
 
-      const computed = crypto
-        .createHmac('sha256', secret)
-        .update(body)
-        .digest('base64');
-
-      const computedBuf = Buffer.from(computed);
-      const receivedBuf = Buffer.from(hmac ?? '');
-      const valid =
-        computedBuf.length === receivedBuf.length &&
-        crypto.timingSafeEqual(computedBuf, receivedBuf);
-
-      if (!valid) {
+      if (!verifyShopifyHmac(body, hmac, secrets)) {
         logHmacMismatch('refund');
         res.status(401).send('Unauthorized');
         return;
@@ -133,11 +126,16 @@ export function registerShopifyRefundWebhook(
 
         const eventId = insertResult.rows[0].id as number;
 
-        // Build refund lines: SKU + quantity (the worker will resolve to Mirakl order line IDs)
+        // Mirakl shop is tax-excluded (verified via /api/orders/refund probe),
+        // so OR29 `amount` = Shopify's pre-tax subtotal per line.
+        // Currency comes from the refund transaction (defaults to GBP if absent).
+        const currency = payload.transactions?.find(t => t.kind === 'refund')?.currency ?? 'GBP';
         const refundLines = payload.refund_line_items.map(rli => ({
           sku: rli.line_item.sku,
           quantity: rli.quantity,
           shopify_line_item_id: rli.line_item_id,
+          amount: parseFloat(rli.subtotal),
+          currency,
         }));
 
         // ── 4. Enqueue refund_sync job ────────────────────────────────────────
