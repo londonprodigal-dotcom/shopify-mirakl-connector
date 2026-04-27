@@ -50,18 +50,30 @@ export async function handleRefundSync(payload: Record<string, unknown>): Promis
       continue;
     }
 
-    // Derive amount: webhook payload (new) or fall back to Mirakl line price × qty
-    // (older jobs enqueued before the webhook fields were added still work).
-    const miraklLinePrice = Number(matchingLine.price ?? matchingLine.total_price ?? 0);
-    const fallbackAmount = miraklLinePrice * item.quantity;
-    const amount = typeof item.amount === 'number' && item.amount > 0 ? item.amount : fallbackAmount;
-    const currencyIsoCode = item.currency ?? String(miraklOrder.currency_iso_code ?? 'GBP');
+    // Mirakl OR29 `amount` must be ≤ the line's refundable amount as Mirakl knows
+    // it. On Debenhams (and most Mirakl operators) that's the merchant-net price,
+    // not the customer-paid price — Debenhams has already deducted its commission
+    // on order creation. Trusting Shopify's gross subtotal here causes 400
+    // "amount exceeds refundable" rejections, so we authoritatively use Mirakl's
+    // own line.price × quantity. (Shopify amount kept in logs for audit.)
+    const lineQty = Number(matchingLine.quantity) || 1;
+    const unitPrice = matchingLine.price != null
+      ? Number(matchingLine.price)
+      : Number(matchingLine.total_price ?? 0) / lineQty;
+    const amount = Math.round(unitPrice * item.quantity * 100) / 100;
+    const currencyIsoCode = String(miraklOrder.currency_iso_code ?? item.currency ?? 'GBP');
 
     if (amount <= 0) {
-      logger.error('refund_sync: cannot resolve refund amount', {
-        miraklOrderId, sku: item.sku, quantity: item.quantity,
+      logger.error('refund_sync: cannot resolve refund amount from Mirakl line', {
+        miraklOrderId, sku: item.sku, miraklUnitPrice: unitPrice, quantity: item.quantity,
       });
       continue;
+    }
+
+    if (typeof item.amount === 'number' && Math.abs(item.amount - amount) > 0.01) {
+      logger.info('refund_sync: Shopify gross differs from Mirakl-net refund amount', {
+        miraklOrderId, sku: item.sku, shopifyAmount: item.amount, miraklAmount: amount,
+      });
     }
 
     refundLines.push({
