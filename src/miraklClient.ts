@@ -546,8 +546,23 @@ export class MiraklClient {
    */
   async confirmShipment(orderId: string): Promise<void> {
     logger.info('OR24 – Confirming shipment on Mirakl', { orderId });
-    await this.http.put(`/api/orders/${orderId}/ship`, {});
-    logger.info('OR24 – Shipment confirmed', { orderId });
+    try {
+      await this.http.put(`/api/orders/${orderId}/ship`, {});
+      logger.info('OR24 – Shipment confirmed', { orderId });
+    } catch (err) {
+      // Idempotent: if the order is already SHIPPED on Mirakl (e.g. operator
+      // marked it shipped manually, or OR23 tracking auto-progressed it),
+      // treat as success rather than dead-lettering. Mirakl returns:
+      //   "Cannot mark the order with id 'X' to the new status. Current status
+      //    is 'SHIPPED', expected is one of '[SHIPPING]'."
+      const e = err as { isAxiosError?: boolean; response?: { status?: number; data?: { message?: string } } };
+      const msg = e?.response?.data?.message ?? '';
+      if (e?.response?.status === 400 && /current status is 'shipped'/i.test(msg)) {
+        logger.info('OR24 – Order already SHIPPED on Mirakl, treating as success', { orderId });
+        return;
+      }
+      throw err;
+    }
   }
 
   // ─── OR29 – Create refunds on order lines ─────────────────────────────────
