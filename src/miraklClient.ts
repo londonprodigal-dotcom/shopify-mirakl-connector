@@ -569,6 +569,9 @@ export class MiraklClient {
     }>
   ): Promise<void> {
     logger.info('OR29 – Requesting refund on Mirakl', { orderId, lineCount: lines.length });
+    // Mirakl OR29 requires shipping_amount on every refund line, even when
+    // refunding line-only — omitting it returns 400 "Invalid value for field
+    // 'refunds[0].shippingAmount'. The field cannot be empty." Default to 0.
     await this.http.put('/api/orders/refund', {
       refunds: lines.map(l => ({
         order_line_id:     l.orderLineId,
@@ -576,7 +579,7 @@ export class MiraklClient {
         amount:            l.amount,
         currency_iso_code: l.currencyIsoCode,
         reason_code:       l.reasonCode ?? '17',
-        ...(l.shippingAmount !== undefined ? { shipping_amount: l.shippingAmount } : {}),
+        shipping_amount:   l.shippingAmount ?? 0,
       })),
     });
     logger.info('OR29 – Refund requested successfully', { orderId });
