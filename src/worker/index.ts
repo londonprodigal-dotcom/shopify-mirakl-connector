@@ -144,7 +144,7 @@ async function pollLoop(workerId: string, intervalMs: number): Promise<void> {
             }
             return;
           }
-          const error = err instanceof Error ? err.message : String(err);
+          const error = formatJobError(err);
           const outcome = await markFailed(job, error);
           if (outcome === 'dead') {
             logger.error('Job dead-lettered', { jobId: job.id, type: job.job_type, error });
@@ -287,4 +287,25 @@ async function insertWatchdogAlert(name: string, message: string): Promise<void>
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Surface upstream HTTP response bodies (e.g. Mirakl 400 reasons) in last_error
+// instead of axios's bare "Request failed with status code 400".
+function formatJobError(err: unknown): string {
+  const anyErr = err as { isAxiosError?: boolean; response?: { status?: number; data?: unknown }; message?: string; config?: { method?: string; url?: string } };
+  if (anyErr && anyErr.isAxiosError) {
+    const status = anyErr.response?.status;
+    const method = anyErr.config?.method?.toUpperCase();
+    const url    = anyErr.config?.url;
+    let body = '';
+    try {
+      body = typeof anyErr.response?.data === 'string'
+        ? anyErr.response.data
+        : JSON.stringify(anyErr.response?.data ?? '');
+    } catch {
+      body = String(anyErr.response?.data ?? '');
+    }
+    return `HTTP ${status ?? '?'} ${method ?? ''} ${url ?? ''} :: ${body}`.slice(0, 1000);
+  }
+  return err instanceof Error ? err.message : String(err);
 }
