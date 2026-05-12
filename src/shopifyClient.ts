@@ -371,17 +371,33 @@ export class ShopifyClient {
 
   // ─── Inventory item → SKU lookup (for stock webhooks) ───────────────────────
 
-  async lookupSkuByInventoryItem(inventoryItemId: number): Promise<string | null> {
+  async lookupSkuByInventoryItem(inventoryItemId: number): Promise<{
+    sku: string;
+    productTags: string[];
+  } | null> {
     const gid = `gid://shopify/InventoryItem/${inventoryItemId}`;
     const query = `
       query LookupInventoryItem($id: ID!) {
-        inventoryItem(id: $id) { sku }
+        inventoryItem(id: $id) {
+          sku
+          variant { product { tags } }
+        }
       }
     `;
-    const result = await this.gql<{ data?: { inventoryItem?: { sku: string } | null } }>(
-      query, { id: gid }
-    );
-    return result.data?.inventoryItem?.sku ?? null;
+    const result = await this.gql<{
+      data?: {
+        inventoryItem?: {
+          sku: string;
+          variant?: { product?: { tags: string[] } | null } | null;
+        } | null;
+      };
+    }>(query, { id: gid });
+    const item = result.data?.inventoryItem;
+    if (!item?.sku) return null;
+    return {
+      sku: item.sku,
+      productTags: item.variant?.product?.tags ?? [],
+    };
   }
 
   // ─── SKU → numeric variant ID lookup (for order creation) ──────────────────

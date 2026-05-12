@@ -62,15 +62,30 @@ export function registerShopifyInventoryWebhook(
 
         const eventId = insertResult.rows[0].id as number;
 
-        // ── 4. Look up SKU (need it for the job payload) ──────────────────────
-        const sku = await shopify.lookupSkuByInventoryItem(payload.inventory_item_id);
-        if (!sku) {
+        // ── 4. Look up SKU + product tags ─────────────────────────────────────
+        const lookup = await shopify.lookupSkuByInventoryItem(payload.inventory_item_id);
+        if (!lookup) {
           logger.warn('No SKU for inventory item', { inventory_item_id: payload.inventory_item_id });
           res.sendStatus(200);
           return;
         }
+        const { sku, productTags } = lookup;
 
-        // ── 5. Enqueue stock_update job ───────────────────────────────────────
+        // ── 5. Tag gate ───────────────────────────────────────────────────────
+        // fetchAllProducts (bulk batch_sync) filters to `tag:debenhams`. Mirror
+        // that here so full-price Louche products don't churn through stock_update
+        // → Mirakl reject → pending_catalog. The previous behaviour pushed every
+        // SKU and orphaned the ones Mirakl couldn't find — visible as 28 stuck
+        // catalog_orphan rows on 2026-05-11.
+        if (!productTags.includes('debenhams')) {
+          logger.info('Inventory webhook skipped — product not tagged debenhams', {
+            sku, eventId, available: payload.available,
+          });
+          res.sendStatus(200);
+          return;
+        }
+
+        // ── 6. Enqueue stock_update job ───────────────────────────────────────
         await enqueueJob('stock_update', { sku, quantity: payload.available }, { eventId, correlationId });
         logger.info('Stock update enqueued', { sku, available: payload.available, eventId });
 
