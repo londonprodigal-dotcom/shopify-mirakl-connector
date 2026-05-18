@@ -33,7 +33,9 @@ export async function startWorker(): Promise<void> {
   setInterval(() => updateHeartbeat(workerId), 30_000);
   await updateHeartbeat(workerId);
 
-  // Schedule recurring reconciliation jobs
+  // Schedule recurring reconciliation jobs.
+  // Each call sets its own dedupe window so multiple processes (worker +
+  // webhook-server inline worker) firing the same cron collapse to one run.
   // Order reconcile — 10min is plenty for ~6 orders/day (was 2min, hammered rate limits)
   scheduleRecurring('order_reconcile', Math.max(config.hardening.reconcileOrderIntervalMs, 600_000));
   // Stock reconcile every hour (not 15 min — avoids Mirakl rate limits)
@@ -188,27 +190,48 @@ async function updateHeartbeat(workerId: string): Promise<void> {
 // ─── Scheduling helpers ──────────────────────────────────────────────────────
 
 async function scheduleRecurring(jobType: JobType, intervalMs: number): Promise<void> {
-  // Run immediately, then on interval
-  await enqueueJobIfNotPending(jobType);
-  setInterval(() => enqueueJobIfNotPending(jobType), intervalMs);
-  logger.info(`Scheduled recurring: ${jobType} every ${intervalMs / 60000}min`);
+  // Use 80% of the interval as the dedupe window so a second scheduler
+  // firing the same cron seconds or a minute later sees the just-completed
+  // run and skips. Without this, two services (worker + webhook-server
+  // inline worker) each fire and produce duplicate enqueues.
+  const dedupeWindowMs = Math.floor(intervalMs * 0.8);
+  await enqueueJobIfNotPending(jobType, dedupeWindowMs);
+  setInterval(() => enqueueJobIfNotPending(jobType, dedupeWindowMs), intervalMs);
+  logger.info(`Scheduled recurring: ${jobType} every ${intervalMs / 60000}min (dedupe ${dedupeWindowMs / 60000}min)`);
 }
 
-async function enqueueJobIfNotPending(jobType: JobType): Promise<void> {
-  // Don't enqueue if there's already a pending/running job of this type
-  const existing = await query<{ count: string }>(
-    `SELECT COUNT(*) as count FROM jobs WHERE job_type = $1 AND status IN ('pending', 'running')`,
-    [jobType]
-  );
-  if (parseInt(existing.rows[0]?.count ?? '0', 10) > 0) return;
+async function enqueueJobIfNotPending(jobType: JobType, minIntervalMs: number = 0): Promise<void> {
+  // Skip if already pending/running, OR completed within minIntervalMs. The
+  // recency check collapses duplicate firings from multiple schedulers (e.g.
+  // worker + inline webhook-server worker) that would otherwise each enqueue
+  // because the previous run completed in seconds.
+  if (minIntervalMs > 0) {
+    const existing = await query<{ count: string }>(
+      `SELECT COUNT(*) as count FROM jobs
+         WHERE job_type = $1
+           AND ( status IN ('pending', 'running')
+              OR (completed_at IS NOT NULL AND completed_at > NOW() - ($2 || ' milliseconds')::interval) )`,
+      [jobType, String(minIntervalMs)]
+    );
+    if (parseInt(existing.rows[0]?.count ?? '0', 10) > 0) return;
+  } else {
+    const existing = await query<{ count: string }>(
+      `SELECT COUNT(*) as count FROM jobs WHERE job_type = $1 AND status IN ('pending', 'running')`,
+      [jobType]
+    );
+    if (parseInt(existing.rows[0]?.count ?? '0', 10) > 0) return;
+  }
   await enqueueJob(jobType, {});
 }
 
 async function scheduleNightlyAudit(hourUtc: number): Promise<void> {
+  // 12h dedupe window — ensures only one audit fires per night even when
+  // multiple processes evaluate the trigger inside the same 2-minute window.
+  const NIGHTLY_DEDUPE_MS = 12 * 3_600_000;
   const check = () => {
     const now = new Date();
     if (now.getUTCHours() === hourUtc && now.getUTCMinutes() < 2) {
-      enqueueJobIfNotPending('full_audit');
+      enqueueJobIfNotPending('full_audit', NIGHTLY_DEDUPE_MS);
     }
   };
   setInterval(check, 60_000); // Check every minute
@@ -216,12 +239,14 @@ async function scheduleNightlyAudit(hourUtc: number): Promise<void> {
 }
 
 async function scheduleWeeklyTriage(hourUtc: number): Promise<void> {
+  // 6-day dedupe window — one triage per week, even with multiple schedulers.
+  const WEEKLY_DEDUPE_MS = 6 * 86_400_000;
   const check = () => {
     const now = new Date();
     // UTCDay: Sunday=0, Monday=1. Fire in the first 2 minutes of the target hour
     // on Monday to make triggering robust to minute-level scheduler drift.
     if (now.getUTCDay() === 1 && now.getUTCHours() === hourUtc && now.getUTCMinutes() < 2) {
-      enqueueJobIfNotPending('weekly_triage');
+      enqueueJobIfNotPending('weekly_triage', WEEKLY_DEDUPE_MS);
     }
   };
   setInterval(check, 60_000);

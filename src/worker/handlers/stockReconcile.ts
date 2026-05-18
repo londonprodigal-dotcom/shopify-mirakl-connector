@@ -67,7 +67,11 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
     let priceDriftCount = 0;
     const driftSamples: Array<{ sku: string; expected: number; actual: number }> = [];
     const priceDriftSamples: Array<{ sku: string; expectedPrice: number; miraklPrice: number }> = [];
-    const batchCorrections: Array<{ sku: string; quantity: number; price?: number; discountPrice?: number }> = [];
+    // `sku` is the Mirakl-side offer-sku (post-remap suffix for V2 offers) sent to OF01.
+    // `shopifySku` is the Shopify-side key used by `stock_ledger` for the post-push
+    // drift-clear UPDATE — without it, remapped SKUs never clear and oscillate
+    // between drifted/corrected forever. Delist entries have no Shopify counterpart.
+    const batchCorrections: Array<{ sku: string; shopifySku?: string; quantity: number; price?: number; discountPrice?: number }> = [];
 
     for (const [sku, shopify] of shopifyData) {
       const expectedMiraklQty = applyStockBuffer(shopify.quantity, stockBuffer, stockHoldbackLastN);
@@ -120,6 +124,7 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
         // push base=selling, wiping the strikethrough. Incident 2026-04-20.
         batchCorrections.push({
           sku: miraklSku,
+          shopifySku: sku,
           quantity: expectedMiraklQty,
           price: expectedBasePrice,
           discountPrice: expectedDiscount > 0 ? expectedDiscount : undefined,
@@ -168,11 +173,13 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
         importResult = { importId };
         logger.info('Batch corrections pushed', { importId, count: correctionCount });
 
-        // Mark all corrected SKUs in ledger
+        // Mark all corrected SKUs in ledger. Match on the Shopify-side sku
+        // because that's the key under which `stock_ledger` was upserted (line 99).
+        // Falling back to c.sku covers delist entries that have no Shopify counterpart.
         for (const c of batchCorrections) {
           await query(
             `UPDATE stock_ledger SET mirakl_qty = $2, last_pushed_at = NOW(), drift_detected = FALSE WHERE sku = $1`,
-            [c.sku, c.quantity]
+            [c.shopifySku ?? c.sku, c.quantity]
           );
         }
       } catch (err) {
