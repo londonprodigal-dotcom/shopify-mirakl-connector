@@ -296,14 +296,39 @@ export class ShopifyClient {
     this.headers['X-Shopify-Access-Token'] = token;
   }
 
+  /**
+   * Execute a Shopify HTTP request with one transparent OAuth-refresh retry on 401.
+   * Shopify rotates tokens unpredictably and our 5-minute pre-expiry buffer still
+   * leaves a small race window where a cached token is rejected mid-flight. On 401
+   * we force-expire the cache, mint a fresh token, and retry once. Only retries
+   * when OAuth client credentials are configured (static-token mode has nothing
+   * to refresh). Single retry — repeated 401 means real credential failure.
+   */
+  private async authenticatedRequest(
+    url: string,
+    options: { method: string; body?: string }
+  ): Promise<Response> {
+    const doRequest = async (): Promise<Response> => {
+      await this.ensureAuth();
+      const init: RequestInit = { method: options.method, headers: this.headers };
+      if (options.body !== undefined) init.body = options.body;
+      return fetch(url, init);
+    };
+    let response = await doRequest();
+    if (response.status === 401 && this.clientId && this.clientSecret) {
+      logger.warn('Shopify 401 — forcing OAuth refresh and retrying once', { url });
+      this.oauthExpiresAt = 0;
+      response = await doRequest();
+    }
+    return response;
+  }
+
   private async gql<T = unknown>(
     query: string,
     variables: Record<string, unknown> = {}
   ): Promise<T> {
-    await this.ensureAuth();
-    const response = await fetch(this.endpoint, {
+    const response = await this.authenticatedRequest(this.endpoint, {
       method: 'POST',
-      headers: this.headers,
       body: JSON.stringify({ query, variables }),
     });
 
@@ -327,11 +352,9 @@ export class ShopifyClient {
   // ─── REST helper ────────────────────────────────────────────────────────────
 
   private async rest<T>(path: string, body: unknown, method: string = 'POST'): Promise<T> {
-    await this.ensureAuth();
-    const response = await fetch(`${this.restBaseUrl}${path}`, {
+    const response = await this.authenticatedRequest(`${this.restBaseUrl}${path}`, {
       method,
-      headers: this.headers,
-      body:    JSON.stringify(body),
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       const text = await response.text();
@@ -341,10 +364,8 @@ export class ShopifyClient {
   }
 
   private async restGet<T>(path: string): Promise<T> {
-    await this.ensureAuth();
-    const response = await fetch(`${this.restBaseUrl}${path}`, {
-      method:  'GET',
-      headers: this.headers,
+    const response = await this.authenticatedRequest(`${this.restBaseUrl}${path}`, {
+      method: 'GET',
     });
     if (!response.ok) {
       const text = await response.text();
