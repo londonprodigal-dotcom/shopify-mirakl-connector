@@ -161,7 +161,7 @@ def _klaviyo_subscribed_emails(max_pages=1000):
 
     list_id = os.environ.get("KLAVIYO_JOY_LIST_ID") or state.get("klaviyo_list_id")
     if not list_id:
-        r = requests.get("https://a.klaviyo.com/api/lists/?page[size]=100",
+        r = requests.get("https://a.klaviyo.com/api/lists/",
                          headers=headers, timeout=30)
         r.raise_for_status()
         lists = r.json().get("data", [])
