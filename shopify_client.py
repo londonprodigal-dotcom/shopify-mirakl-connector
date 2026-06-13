@@ -100,7 +100,7 @@ def fetch_orders_updated_since(iso_ts, max_pages=20):
     return [o for o in orders if not o.get("test")]
 
 
-def fetch_purchaser_emails(min_orders=1, max_pages=40):
+def fetch_purchaser_emails(min_orders=1, max_pages=400):
     """All customer emails with at least min_orders orders."""
     emails, cursor = [], None
     q = f"orders_count:>={min_orders}"

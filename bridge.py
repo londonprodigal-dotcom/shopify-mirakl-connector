@@ -152,24 +152,43 @@ AUD_PURCHASERS = "JOY Purchasers (attribution-bridge)"
 AUD_SUBSCRIBERS = "JOY Subscribers (attribution-bridge)"
 
 
-def _klaviyo_subscribed_emails(max_pages=200):
-    """Subscribed profiles via Klaviyo JSON:API segments/profiles pagination."""
+def _klaviyo_subscribed_emails(max_pages=1000):
+    """Members of the main newsletter list (largest list = ground truth for
+    subscribers), falling back to a subscribed-profiles scan."""
     key = os.environ["KLAVIYO_JOY_API_KEY"]
     headers = {"Authorization": f"Klaviyo-API-Key {key}",
                "accept": "application/json", "revision": "2024-10-15"}
+
+    list_id = os.environ.get("KLAVIYO_JOY_LIST_ID") or state.get("klaviyo_list_id")
+    if not list_id:
+        r = requests.get("https://a.klaviyo.com/api/lists/?page[size]=100",
+                         headers=headers, timeout=30)
+        r.raise_for_status()
+        lists = r.json().get("data", [])
+        # pick the newsletter list by name, else first list
+        chosen = None
+        for l in lists:
+            name = (l.get("attributes", {}).get("name") or "").lower()
+            if "newsletter" in name or "subscriber" in name or "master" in name:
+                chosen = l["id"]
+                break
+        if not chosen and lists:
+            chosen = lists[0]["id"]
+        if not chosen:
+            return []
+        list_id = chosen
+        state.set_("klaviyo_list_id", list_id)
+        log(f"  klaviyo list selected: {list_id}")
+
     emails = []
-    url = ("https://a.klaviyo.com/api/profiles/?page[size]=100"
-           "&additional-fields[profile]=subscriptions")
+    url = f"https://a.klaviyo.com/api/lists/{list_id}/profiles/?page[size]=100"
     for _ in range(max_pages):
         r = requests.get(url, headers=headers, timeout=30)
         r.raise_for_status()
         body = r.json()
         for p in body.get("data", []):
-            attrs = p.get("attributes", {})
-            em = attrs.get("email")
-            subs = (attrs.get("subscriptions") or {}).get("email") or {}
-            marketing = subs.get("marketing") or {}
-            if em and marketing.get("consent") == "SUBSCRIBED":
+            em = p.get("attributes", {}).get("email")
+            if em:
                 emails.append(em)
         url = (body.get("links") or {}).get("next")
         if not url:
