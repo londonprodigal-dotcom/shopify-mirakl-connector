@@ -152,7 +152,7 @@ AUD_PURCHASERS = "JOY Purchasers (attribution-bridge)"
 AUD_SUBSCRIBERS = "JOY Subscribers (attribution-bridge)"
 
 
-def _klaviyo_subscribed_emails(max_pages=1000):
+def _klaviyo_subscribed_emails(max_pages=3000):
     """Members of the main newsletter list (largest list = ground truth for
     subscribers), falling back to a subscribed-profiles scan."""
     key = os.environ["KLAVIYO_JOY_API_KEY"]
@@ -181,18 +181,31 @@ def _klaviyo_subscribed_emails(max_pages=1000):
         log(f"  klaviyo list selected: {list_id}")
 
     emails = []
-    url = f"https://a.klaviyo.com/api/lists/{list_id}/profiles/?page[size]=100"
-    for _ in range(max_pages):
+    # request subscriptions so we can drop anyone not currently opted in to email
+    # marketing — list membership alone includes unsubscribed/suppressed profiles,
+    # which must never be pushed to ad platforms (GDPR).
+    url = (f"https://a.klaviyo.com/api/lists/{list_id}/profiles/?page[size]=100"
+           "&additional-fields[profile]=subscriptions")
+    pages = 0
+    for pages in range(1, max_pages + 1):
         r = requests.get(url, headers=headers, timeout=30)
         r.raise_for_status()
         body = r.json()
         for p in body.get("data", []):
-            em = p.get("attributes", {}).get("email")
-            if em:
+            attrs = p.get("attributes", {})
+            em = attrs.get("email")
+            if not em:
+                continue
+            marketing = (((attrs.get("subscriptions") or {}).get("email") or {})
+                         .get("marketing") or {})
+            if marketing.get("consent") == "SUBSCRIBED":
                 emails.append(em)
         url = (body.get("links") or {}).get("next")
         if not url:
             break
+    else:
+        log(f"  WARNING: hit max_pages={max_pages} on list {list_id} — "
+            f"subscriber list may be truncated")
     return emails
 
 
