@@ -53,7 +53,10 @@ def run_cycle(x_api_key: str = Header(default="")):
 @app.post("/run-audiences")
 def run_audiences(x_api_key: str = Header(default="")):
     _check_key(x_api_key)
-    return bridge.audience_cycle()
+    # the full pull (newsletter + purchasers) outlasts the edge HTTP timeout,
+    # so run it in the background and report progress via /status
+    threading.Thread(target=bridge.audience_cycle, daemon=True).start()
+    return {"started": True, "note": "running in background; poll /status"}
 
 
 def _loop():
