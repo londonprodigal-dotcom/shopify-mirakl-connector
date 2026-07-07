@@ -41,7 +41,19 @@ CHUNK_DAYS = 31
 
 DECLINE_REASON_RETURNED = "Returned in Shopify"
 DECLINE_REASON_CANCELLED = "Cancelled in Shopify"
+DECLINE_REASON_BLOCKED_CODE = "Advertiser-owned voucher code - not for publisher promotion"
 AMEND_REASON = "Partial return in Shopify"
+
+# Site-owned codes registered in Awin My Offers as not-for-publisher-promotion.
+# Transactions using them are declined, but only from BLOCKED_CODES_FROM
+# (the registration date) so pre-registration transactions are not judged
+# against terms that were not yet published.
+BLOCKED_VOUCHER_CODES = {
+    c.strip().upper()
+    for c in os.environ.get("BLOCKED_VOUCHER_CODES", "").split(",")
+    if c.strip()
+}
+BLOCKED_CODES_FROM = os.environ.get("BLOCKED_CODES_FROM", "")  # YYYY-MM-DD
 
 
 def _env(name):
@@ -174,6 +186,16 @@ def decide(txn, order, now=None):
     batch action object; None means leave the transaction pending."""
     now = now or datetime.now(timezone.utc)
     txn_id = txn["id"]
+
+    code = (txn.get("voucherCode") or "").strip().upper()
+    if code in BLOCKED_VOUCHER_CODES:
+        txn_date = datetime.fromisoformat(txn["transactionDate"]).replace(tzinfo=timezone.utc)
+        if not BLOCKED_CODES_FROM or txn_date.date().isoformat() >= BLOCKED_CODES_FROM:
+            return (
+                {"action": "decline",
+                 "transaction": {"transactionId": txn_id, "declineReason": DECLINE_REASON_BLOCKED_CODE}},
+                f"blocked voucher code {code} used",
+            )
 
     if order is None:
         return None, "order not found in Shopify — skipped for manual review"
