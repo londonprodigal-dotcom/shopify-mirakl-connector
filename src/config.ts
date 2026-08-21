@@ -75,6 +75,8 @@ export interface AppConfig {
     watchdogUrls: Array<{ url: string; name: string; staleHours: number; timestampField: string }>;
     driftAlertThreshold: number;
     driftCriticalCount: number;
+    delistMinQualifyingSkus: number;
+    delistMaxFraction: number;
     degradedMode: boolean;
   };
 }
@@ -158,6 +160,8 @@ export function loadConfig(): AppConfig {
       watchdogUrls: parseWatchdogUrls(optionalEnv('WATCHDOG_URLS')),
       driftAlertThreshold: parseInt(optionalEnv('DRIFT_ALERT_THRESHOLD', '5') ?? '5', 10),
       driftCriticalCount: parseInt(optionalEnv('DRIFT_CRITICAL_COUNT', '20') ?? '20', 10),
+      delistMinQualifyingSkus: parseInt(optionalEnv('DELIST_MIN_QUALIFYING_SKUS', '500') ?? '500', 10),
+      delistMaxFraction: parseFloat(optionalEnv('DELIST_MAX_FRACTION', '0.2') ?? '0.2'),
       degradedMode: (optionalEnv('DEGRADED_MODE', 'false') ?? 'false') === 'true',
     },
   };

@@ -141,6 +141,31 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
     let delistCount = 0;
     try {
       const qualifyingSkus = await shopify.fetchQualifyingSkus();
+
+      // ─── Mass-delist guard (incident 2026-08-20 21:56Z) ──────────────────
+      // fetchQualifyingSkus returned a near-empty set for one run (Shopify
+      // search-backed `tag:debenhams` query, no GraphQL error) and this loop
+      // zeroed 1,464 live offers — Debenhams saw a 99% SKU drop. A tag
+      // removal that large is never a legitimate hourly change, so refuse to
+      // delist when the qualifying set is implausibly small OR when the
+      // delist would hit more than a fraction of the live offers.
+      const liveOffers = [...miraklMap.values()].filter(o => o.quantity > 0).length;
+      const delistCandidates = [...miraklMap.entries()].filter(([s, o]) => o.quantity > 0 && !qualifyingSkus.has(s)).length;
+      const { delistMinQualifyingSkus, delistMaxFraction } = config.hardening;
+      const tooFewQualifying = qualifyingSkus.size < delistMinQualifyingSkus;
+      const tooManyDelists = liveOffers > 0 && delistCandidates > 20 && delistCandidates / liveOffers > delistMaxFraction;
+      if (tooFewQualifying || tooManyDelists) {
+        const reason = tooFewQualifying
+          ? `qualifying SKU set too small (${qualifyingSkus.size} < ${delistMinQualifyingSkus})`
+          : `delist would hit ${delistCandidates}/${liveOffers} live offers (> ${Math.round(delistMaxFraction * 100)}%)`;
+        logger.error('Mass-delist guard tripped — skipping delist step this run', { reason, qualifying: qualifyingSkus.size, liveOffers, delistCandidates });
+        await query(
+          `INSERT INTO alerts (severity, category, message, metadata) VALUES ('critical', 'delist_guard', $1, $2)`,
+          [`Stock reconcile refused to delist: ${reason}`, JSON.stringify({ qualifying: qualifyingSkus.size, liveOffers, delistCandidates })]
+        );
+        throw new Error(`delist guard: ${reason}`);
+      }
+
       for (const [sku, miraklOffer] of miraklMap) {
         if (!qualifyingSkus.has(sku) && miraklOffer.quantity > 0) {
           if (correctedSkus.has(sku)) {
@@ -158,7 +183,9 @@ export async function handleStockReconcile(_payload: Record<string, unknown>): P
         logger.info('Delisting non-qualifying offers', { delistCount });
       }
     } catch (err) {
-      logger.error('Failed to fetch qualifying SKUs for delisting', {
+      // Guard trip or Shopify failure: drift corrections above still go out,
+      // but no delist rows are added this run.
+      logger.error('Delist step skipped', {
         error: err instanceof Error ? err.message : String(err),
       });
     }

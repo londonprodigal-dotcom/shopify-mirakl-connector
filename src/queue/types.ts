@@ -10,7 +10,8 @@ export type JobType =
   | 'fulfilment_sync'
   | 'refund_sync'
   | 'resurrection_poll'
-  | 'weekly_triage';
+  | 'weekly_triage'
+  | 'restore_delisted';
 
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'dead' | 'skipped';
 
@@ -88,4 +89,5 @@ export const RETRY_CONFIG: Record<JobType, { maxAttempts: number; baseDelayMs: n
   resurrection_poll: { maxAttempts: 2, baseDelayMs: 120_000, maxDelayMs: 300_000 },
   // Weekly operator-triage email — rare (Mon 08:00 UTC); retry twice if Resend hiccups.
   weekly_triage:     { maxAttempts: 2, baseDelayMs: 300_000, maxDelayMs: 600_000 },
+  restore_delisted:  { maxAttempts: 1, baseDelayMs: 60_000, maxDelayMs: 60_000 },
 };

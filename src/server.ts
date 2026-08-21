@@ -576,6 +576,20 @@ export async function startServer(config: AppConfig): Promise<void> {
     }
   });
 
+  // ── Admin: Restore offers delisted in a window (incident recovery) ───────
+  app.post('/admin/restore-delisted', express.json(), async (req, res) => {
+    try {
+      const { since, until, dryRun } = (req.body ?? {}) as { since?: string; until?: string; dryRun?: boolean };
+      if (!since || !until) { res.status(400).json({ error: 'since and until (ISO) required' }); return; }
+      const { enqueueJob } = await import('./queue/enqueue');
+      await enqueueJob('restore_delisted', { since, until, dryRun: Boolean(dryRun) });
+      logger.info('[admin] restore_delisted job enqueued', { since, until, dryRun });
+      res.json({ status: 'ok', message: 'restore_delisted enqueued — see sync_state.last_restore_delisted for result' });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to enqueue', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Admin: Debug reconciliation state ─────────────────────────────────────
   app.get('/admin/debug/reconcile-state', async (_req, res) => {
     try {
