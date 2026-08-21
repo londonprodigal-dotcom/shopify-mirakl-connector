@@ -227,6 +227,10 @@ export class ShopifyClient {
   private readonly clientSecret: string | undefined;
   private oauthToken: string | null = null;
   private oauthExpiresAt: number = 0;  // Unix ms
+  // Single in-flight mint: concurrent callers share one refresh. Shopify
+  // client_credentials invalidates the previous token on each mint, so two
+  // parallel refreshes leave one caller holding a dead token (401).
+  private oauthRefreshInFlight: Promise<string> | null = null;
 
   constructor(config: AppConfig) {
     this.endpoint    = config.shopify.graphqlEndpoint;
@@ -292,7 +296,10 @@ export class ShopifyClient {
       this.headers['X-Shopify-Access-Token'] = this.oauthToken;
       return;
     }
-    const token = await this.refreshOAuthToken();
+    if (!this.oauthRefreshInFlight) {
+      this.oauthRefreshInFlight = this.refreshOAuthToken().finally(() => { this.oauthRefreshInFlight = null; });
+    }
+    const token = await this.oauthRefreshInFlight;
     this.headers['X-Shopify-Access-Token'] = token;
   }
 

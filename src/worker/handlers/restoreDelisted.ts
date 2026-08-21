@@ -35,10 +35,10 @@ export async function handleRestoreDelisted(payload: Record<string, unknown>): P
   logger.info('[restore_delisted] Candidate SKUs from ledger', { count: rows.rows.length, since, until, dryRun });
   if (rows.rows.length === 0) return;
 
-  const [shopifyData, qualifyingSkus] = await Promise.all([
-    shopify.fetchAllInventoryAndPrices(),
-    shopify.fetchQualifyingSkus(),
-  ]);
+  // Sequential on purpose — two parallel Shopify calls on a cold client raced
+  // the OAuth mint and one got a 401 (first run, 2026-08-21 11:14Z).
+  const shopifyData = await shopify.fetchAllInventoryAndPrices();
+  const qualifyingSkus = await shopify.fetchQualifyingSkus();
   if (qualifyingSkus.size < delistMinQualifyingSkus) {
     throw new Error(`[restore_delisted] qualifying set too small (${qualifyingSkus.size}) — refusing to proceed`);
   }
