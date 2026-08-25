@@ -92,11 +92,23 @@ export async function startServer(config: AppConfig): Promise<void> {
       }
       const buffer = Buffer.from(await response.arrayBuffer());
 
-      // Ensure minimum 1200px width for Debenhams, rewrite DPI to 72
+      // Debenhams auto-validation measures the SHORT side (min 1080) — a width-only
+      // floor let landscape images through at e.g. 1200x589 and they were rejected
+      // with IMAGE_KO. Scale so short side >= 1080 and width >= 1200, rewrite DPI to 72.
       const metadata = await sharp(buffer).metadata();
       let pipeline = sharp(buffer).withMetadata({ density: 72 });
-      if (metadata.width && metadata.width < 1200) {
-        pipeline = pipeline.resize({ width: 1200, withoutEnlargement: false });
+      const w = metadata.width ?? 0;
+      const h = metadata.height ?? 0;
+      const shortSide = Math.min(w, h);
+      if (w > 0 && h > 0) {
+        const scale = Math.max(1200 / w, 1080 / shortSide, 1);
+        if (scale > 1) {
+          pipeline = pipeline.resize({
+            width: Math.round(w * scale),
+            height: Math.round(h * scale),
+            withoutEnlargement: false,
+          });
+        }
       }
       const fixed = await pipeline
         .jpeg({ quality: 90 })

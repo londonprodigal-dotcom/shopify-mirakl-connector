@@ -132,19 +132,44 @@ export class MiraklClient {
     linesOk: number;
     linesError: number;
     hasTransformationErrorReport: boolean;
+    hasErrorReport: boolean;
+    integration: {
+      synchronized: number;
+      rejected: number;
+      invalid: number;
+      wrongIdentifiers: number;
+    } | null;
     raw: any;
   }> {
     const { data } = await this.http.get(`/api/products/imports/${importId}`, {
       params: this.shopParam(),
     });
+    const det = data.integration_details;
     return {
       importStatus: data.import_status ?? data.status ?? 'UNKNOWN',
       linesRead:    data.transform_lines_read ?? data.lines_read ?? 0,
       linesOk:      data.transform_lines_in_success ?? data.lines_in_success ?? 0,
       linesError:   data.transform_lines_in_error ?? data.lines_in_error ?? 0,
       hasTransformationErrorReport: data.has_transformation_error_report ?? false,
+      hasErrorReport: data.has_error_report ?? false,
+      integration: det ? {
+        synchronized:     det.products_successfully_synchronized ?? 0,
+        rejected:         det.rejected_products ?? 0,
+        invalid:          det.invalid_products ?? 0,
+        wrongIdentifiers: det.products_with_wrong_identifiers ?? 0,
+      } : null,
       raw: data,
     };
+  }
+
+  // ─── Fetch PA01 integration error report (per-product rejection reasons) ───
+
+  async getIntegrationErrorReport(importId: string | number): Promise<string> {
+    const { data } = await this.http.get<string>(
+      `/api/products/imports/${importId}/error_report`,
+      { params: this.shopParam(), responseType: 'text' }
+    );
+    return String(data);
   }
 
   // ─── Fetch PA01 transformation error report ───────────────────────────────

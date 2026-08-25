@@ -106,6 +106,39 @@ export async function handleCheckImport(_payload: Record<string, unknown>): Prom
 
   logger.info(`[check_import] PA01 complete: ${status.linesOk}/${status.linesRead} lines succeeded`);
 
+  // ─── Integration phase — transformation success does NOT mean the operator
+  // accepted the products. integration_details carries the real outcome, and
+  // rejected products surface only in the P43 error report (per-line reasons
+  // like IMAGE_KO / DUPLICATE_VARIATION / COLOUR_KO). Offers for rejected
+  // products will fail OF01 with "product does not exist".
+  if (status.integration && status.integration.rejected > 0) {
+    logger.warn('[check_import] Operator rejected products at integration', status.integration);
+    let reasonSummary = 'error report unavailable';
+    if (status.hasErrorReport) {
+      try {
+        const report = await mirakl.getIntegrationErrorReport(importId);
+        const counts: Record<string, number> = {};
+        for (const m of report.matchAll(/"([A-Z_]+)\|/g)) {
+          counts[m[1]] = (counts[m[1]] ?? 0) + 1;
+        }
+        reasonSummary = Object.entries(counts)
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, v]) => `${k}:${v}`)
+          .join(', ');
+        logger.warn(`[check_import] Rejection reasons: ${reasonSummary}`);
+      } catch (err) {
+        logger.error('[check_import] Could not fetch integration error report', { error: String(err) });
+      }
+    }
+    await query(
+      `INSERT INTO alerts (severity, category, message, metadata) VALUES ('critical', 'pa01_rejections', $1, $2)`,
+      [
+        `PA01 import ${importId}: ${status.integration.rejected} products rejected at integration (${reasonSummary}). Their offers will fail OF01.`,
+        JSON.stringify({ importId, ...status.integration }),
+      ]
+    );
+  }
+
   // ─── Upload OF01 (offers) ────────────────────────────────────────────────
   if (offersCsvPath) {
     let actualPath = offersCsvPath;
