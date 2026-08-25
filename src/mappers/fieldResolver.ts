@@ -63,6 +63,12 @@ export function resolveField(
         extractColourFromTags(product, mapping);
       if (!colorVal) return 'Multi';
       const str = String(colorVal);
+      // Prefer the shop's own colour name when Debenhams' colourfacet list accepts
+      // it verbatim — flattening a valid facet (Camel→Beige, Navy→Blue) trips their
+      // COLOUR_KO visual validation. The mapping table still drives the coarse
+      // 22-value colour field via colorfacetlower below.
+      const identityFacet = lookupValidFacet(str);
+      if (identityFacet) return identityFacet;
       // For slash combos like "Green/Black" that would map to "Multi",
       // try the primary (first) colour instead
       const facet = lookupColourFacet(str, mapping);
@@ -306,9 +312,42 @@ function resolveOption(
   return null;
 }
 
+// Debenhams `colourfacet` value list (VL11, fetched 2026-08-25). A shop colour
+// matching one of these must be sent verbatim, never flattened to a base colour.
+const VALID_COLOUR_FACETS = [
+  "Amber", "Aqua", "Aubergine", "Baby Blue", "Baby Pink", "Beige",
+  "Black", "Blue", "Bottle Green", "Bright Blue", "Bright Green", "Bright Pink",
+  "Bright Yellow", "Bronze", "Brown", "Burgundy", "Burnt Orange", "Camel",
+  "Cerise", "Charcoal", "Chocolate", "Clear", "Cobalt", "cool_white",
+  "Copper", "Coral", "Cream", "Crimson", "Dark Blue", "Dark Brown",
+  "Dark Green", "Dark Grey", "Dark Indigo", "Dark Mauve", "Dark Navy", "Dark Olive",
+  "Dark Pink", "Dark Red", "Duck Egg Blue", "Dusty Pink", "Ecru", "Emerald",
+  "Fawn", "Fuchsia", "Gold", "Grape", "Green", "Grey",
+  "Indigo", "Ivory", "Jade", "Jet Black", "Khaki", "Lavender",
+  "Lemon", "Light Beige", "Light Blue", "Light Bronze", "Light Brown", "Light Green",
+  "Light Grey", "Light Khaki", "Light Oak", "Light Pink", "Light Red", "Light Sand",
+  "Light Stone", "Light Tan", "Lilac", "Lime", "Magenta", "Maroon",
+  "Mauve", "Medium Beige", "Metallic Gold", "Metallics", "Metallic Silver", "Mid Blue",
+  "Mid Grey", "Mid Navy", "Midnight", "Mint", "Multi", "Mustard",
+  "Natural", "natural_white", "Navy", "Nude", "Off White", "Olive",
+  "Orange", "Pale Blue", "Pale Green", "Pale Grey", "Pale Lilac", "Pale Orange",
+  "Pale Pink", "Peach", "Pink", "Plum", "Purple", "Raspberry",
+  "Red", "Rose", "Rose Gold", "Royal", "Scarlet", "Silver",
+  "soft_white", "Stone", "Tan", "Tangerine", "Taupe", "Teal",
+  "Terracotta", "True Black", "Turquoise", "Violet", "Walnut", "warm_white",
+  "White", "Wine", "Yellow",
+];
+const FACET_BY_LOWER = new Map(VALID_COLOUR_FACETS.map((f) => [f.toLowerCase(), f]));
+
+/** Case-insensitive membership check returning the canonical facet spelling. */
+function lookupValidFacet(colour: string): string | null {
+  return FACET_BY_LOWER.get(colour.trim().toLowerCase()) ?? null;
+}
+
 /**
  * Filter out swatches by URL pattern.
- * Undersized images are no longer excluded — the image proxy resizes to 1200px min width.
+ * Undersized images are no longer excluded — the image proxy resizes so the
+ * short side meets Debenhams' 1080px floor.
  */
 function isExcludedImage(img: ShopifyImage): boolean {
   if (/swatch/i.test(img.url)) return true;
