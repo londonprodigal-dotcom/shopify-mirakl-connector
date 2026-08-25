@@ -183,7 +183,7 @@ optionAliases:
 colourFacetMappings:
   # Beige
   "Beige": "Beige"
-  "Camel": "Camel"
+  "Camel": "Beige"
   "Light Beige": "Beige"
   "Light Brown": "Beige"
   "Light Sand": "Beige"
