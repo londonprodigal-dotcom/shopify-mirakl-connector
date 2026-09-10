@@ -48,12 +48,24 @@ AMEND_REASON = "Partial return in Shopify"
 # Transactions using them are declined, but only from BLOCKED_CODES_FROM
 # (the registration date) so pre-registration transactions are not judged
 # against terms that were not yet published.
-BLOCKED_VOUCHER_CODES = {
+# An entry ending in "*" is a prefix (e.g. "JOIN15*" matches the unique
+# per-customer codes JOIN15-XXXXXXXX that the sign-up popup issues).
+_blocked_entries = [
     c.strip().upper()
     for c in os.environ.get("BLOCKED_VOUCHER_CODES", "").split(",")
     if c.strip()
-}
+]
+BLOCKED_VOUCHER_CODES = {c for c in _blocked_entries if not c.endswith("*")}
+BLOCKED_VOUCHER_PREFIXES = tuple(c[:-1] for c in _blocked_entries if c.endswith("*") and len(c) > 1)
 BLOCKED_CODES_FROM = os.environ.get("BLOCKED_CODES_FROM", "")  # YYYY-MM-DD
+
+
+def is_blocked_code(code):
+    """True if the (upper-cased) voucher code is site-owned: an exact match
+    or one of the configured prefixes."""
+    if not code:
+        return False
+    return code in BLOCKED_VOUCHER_CODES or code.startswith(BLOCKED_VOUCHER_PREFIXES)
 
 
 def _env(name):
@@ -188,7 +200,7 @@ def decide(txn, order, now=None):
     txn_id = txn["id"]
 
     code = (txn.get("voucherCode") or "").strip().upper()
-    if code in BLOCKED_VOUCHER_CODES:
+    if is_blocked_code(code):
         txn_date = datetime.fromisoformat(txn["transactionDate"]).replace(tzinfo=timezone.utc)
         if not BLOCKED_CODES_FROM or txn_date.date().isoformat() >= BLOCKED_CODES_FROM:
             return (
