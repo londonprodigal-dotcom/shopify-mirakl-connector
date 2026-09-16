@@ -1,0 +1,486 @@
+import express from 'express';
+import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import Database from 'better-sqlite3';
+import { buildEvent, buildRefundEvent, buildStoredIdentity, syntheticClientId } from './transform.js';
+import { sendCollect } from './ga4-collect.js';
+import { createEcUploader } from './google-ec.js';
+import { createKxResolver } from './klaviyo-exchange.js';
+
+const {
+  SHOPIFY_WEBHOOK_SECRET,
+  STAPE_DATA_URL = 'https://sst.joythestore.com/data',
+  DB_PATH = '/data/processed.db',
+  DRY_RUN,                 // '1' = log the transformed event and DON'T post to /data (verify before going live)
+  PORT = 3000,
+  ALERT_WINDOW_HOURS = 3,  // dead-man: alert if zero purchases posted within this rolling window during trading hours
+  TRADING_START_UTC = 7,   // ~08:00 BST — only alert inside trading hours to avoid overnight false positives
+  TRADING_END_UTC = 21,    // ~22:00 BST
+  REFUNDS_ENABLED,         // '1' = post refund events to /data. Default off (dormant) — gated go-live with the GA4 refund leg.
+  GA4_PURCHASE_TRANSPORT = 'data',   // 'data' = POST JSON to Stape /data (client 25, current live path). 'collect' = GA4 MP2 wire format to the
+                                     // container's STOCK GA4 client (/g/collect) so cid/sid/sct are read natively and the purchase JOINS the
+                                     // browser session (fix c, 2026-08-18 restage). Flip on Railway; no redeploy needed to revert.
+  GA4_COLLECT_SYNTHETIC = '1',       // 'collect' only: '1' = still send orders with NO captured cid (synthetic cid; captured, unattributed —
+                                     // may double-count vs the native pixel for that order). '0' = skip GA4 for those orders (zero dup risk,
+                                     // ~9% capture loss). Coverage shows ~91% real cid, so '1' is the default.
+  GA4_COLLECT_TIMEOUT_MS = 8000,     // 'collect' only: fetch timeout. A timeout after the hit may have landed is AMBIGUOUS -> we do NOT unclaim.
+  CID_ANCHOR_RESTORE = '1',          // tier-2 restore (2026-08-21, Dylan-approved design): for orders with NO captured cid, use the
+                                     // customer's stored cid from the scid anchor map instead of minting a synthetic one. NEVER
+                                     // overrides a captured fresh cid (tier 1) — restore applies to the would-be-synthetic cohort only.
+  RETENTION_DAYS = 180,    // order-identity store TTL — purge hashed identity older than this (GDPR retention)
+  CID_RECOVERY,            // '1' = APPLY the resolved client_id fallback (checkout-restore -> synthetic). '0'/unset = MEASURE only: coverage is logged but the live cid behaviour is unchanged (keeps the double-count window short until G&Y is disabled).
+  CHECKOUT_CID_TTL_DAYS = 7, // checkout_token->cid store TTL — checkout tokens are short-lived, 7d is ample
+  CID_GRACE_SECONDS = 45,    // grace window: defer a would-be-synthetic order this long so the late checkout_completed cid beacon (PayPal/Klarna/express fire it only at completion) can land before we lock in synthetic. ONLY active when CID_RECOVERY=1.
+  CID_RETRY_SECONDS = 30,    // re-attempt interval for a deferred order whose sGTM POST failed (we already ACKed Shopify 200, so Shopify won't retry it for us)
+  CID_MAX_ATTEMPTS = 5,      // drop a deferred order after this many failed POSTs
+  CID_SWEEP_SECONDS = 10,    // how often the deferred-order sweeper runs
+} = process.env;
+
+if (!SHOPIFY_WEBHOOK_SECRET) { console.error('FATAL: SHOPIFY_WEBHOOK_SECRET missing'); process.exit(1); }
+
+// --- dedicated idempotency store (own SQLite, isolated) ---
+const db = new Database(DB_PATH);
+db.pragma('journal_mode = WAL');
+db.exec('CREATE TABLE IF NOT EXISTS processed (order_id TEXT PRIMARY KEY, processed_at INTEGER)');
+const claim   = db.prepare('INSERT OR IGNORE INTO processed (order_id, processed_at) VALUES (?, ?)');
+const unclaim = db.prepare('DELETE FROM processed WHERE order_id = ?');
+const stats   = db.prepare('SELECT COUNT(*) n, MAX(processed_at) last FROM processed WHERE processed_at >= ?');
+
+// order-identity store (Option A): hashed identity keyed by order id, joined onto refunds; TTL-purged.
+db.exec('CREATE TABLE IF NOT EXISTS order_identity (order_id TEXT PRIMARY KEY, identity TEXT, created_at INTEGER)');
+const putIdentity   = db.prepare('INSERT OR REPLACE INTO order_identity (order_id, identity, created_at) VALUES (?, ?, ?)');
+const getIdentity   = db.prepare('SELECT identity FROM order_identity WHERE order_id = ?');
+const purgeIdentity = db.prepare('DELETE FROM order_identity WHERE created_at < ?');
+
+// checkout_token -> real GA4 client_id, captured browser-side at checkout_started (cookie-restore). Recovers the cid for
+// cart-bypassing flows (Shop Pay button / express) where the cart-attribute capture never runs but the checkout still
+// runs on our domain so _ga is readable. Short TTL — checkout tokens are ephemeral.
+db.exec('CREATE TABLE IF NOT EXISTS checkout_cid (checkout_token TEXT PRIMARY KEY, cid TEXT, created_at INTEGER)');
+try { db.exec('ALTER TABLE checkout_cid ADD COLUMN session_id TEXT'); } catch {}        // additive migration on the existing volume
+try { db.exec('ALTER TABLE checkout_cid ADD COLUMN session_number TEXT'); } catch {}
+try { db.exec('ALTER TABLE checkout_cid ADD COLUMN scid TEXT'); } catch {}              // Shopify Web Pixel clientId (anchor-restore, 2026-08-21)
+const putCheckoutCid   = db.prepare(`INSERT INTO checkout_cid (checkout_token, cid, session_id, session_number, scid, created_at)
+  VALUES (@token, @cid, @sid, @sct, @scid, @ts)
+  ON CONFLICT(checkout_token) DO UPDATE SET
+    cid=COALESCE(excluded.cid, cid), session_id=COALESCE(excluded.session_id, session_id),
+    session_number=COALESCE(excluded.session_number, session_number),
+    scid=COALESCE(excluded.scid, scid), created_at=excluded.created_at`);
+const getCheckoutCid   = db.prepare('SELECT cid, session_id, session_number, scid FROM checkout_cid WHERE checkout_token = ?');
+const purgeCheckoutCid = db.prepare('DELETE FROM checkout_cid WHERE created_at < ?');
+
+// product_id -> Meta catalogue content_id ("/products/<handle>#product"), captured by the checkout pixel from the
+// product url. Lets the order webhook (which has no handle) emit content_ids that match the catalogue retailer_id.
+// Long-lived: handles change rarely, so no TTL — refreshed in place whenever a checkout re-sends the pair.
+db.exec('CREATE TABLE IF NOT EXISTS product_content (product_id TEXT PRIMARY KEY, content_id TEXT, created_at INTEGER)');
+
+// identity map (Phase 2/3 CAPTURE, 2026-08-21): durable anchor -> GA4 cid. Anchors: 'scid:<Shopify Web Pixel clientId>'
+// (Shopify-persisted, ITP-exempt) and 'kx:<Klaviyo _kx>' (email-click identity). CAPTURE ONLY for now — restore logic
+// ships later behind its own flag after design sign-off. TTL 400 days (matches max useful cookie horizon).
+db.exec('CREATE TABLE IF NOT EXISTS identity_map (anchor TEXT PRIMARY KEY, cid TEXT, session_id TEXT, first_seen INTEGER, last_seen INTEGER)');
+const putIdentityMap = db.prepare(`INSERT INTO identity_map (anchor, cid, session_id, first_seen, last_seen)
+  VALUES (@anchor, @cid, @sid, @ts, @ts)
+  ON CONFLICT(anchor) DO UPDATE SET cid=excluded.cid, session_id=excluded.session_id, last_seen=excluded.last_seen`);
+const purgeIdentityMap = db.prepare('DELETE FROM identity_map WHERE last_seen < ?');
+const getIdentityMap   = db.prepare('SELECT cid, last_seen FROM identity_map WHERE anchor = ?');
+const putProductContent = db.prepare('INSERT OR REPLACE INTO product_content (product_id, content_id, created_at) VALUES (?, ?, ?)');
+const getProductContent = db.prepare('SELECT content_id FROM product_content WHERE product_id = ?');
+const countProductContent = db.prepare('SELECT COUNT(*) n FROM product_content');
+
+// One-time pre-warm from the bundled active-seller handle list (product_id<TAB>handle per line).
+// INSERT OR IGNORE so a live pixel capture (REPLACE) always wins; the seed only fills gaps for products not yet seen.
+try {
+  const seedTxt = readFileSync(new URL('./seed-handles.tsv', import.meta.url), 'utf8');
+  const seedStmt = db.prepare('INSERT OR IGNORE INTO product_content (product_id, content_id, created_at) VALUES (?, ?, ?)');
+  const seedAll = db.transaction((lines) => {
+    for (const line of lines) {
+      const i = line.indexOf('\t');
+      if (i < 1) continue;
+      const pid = line.slice(0, i).trim();
+      const handle = line.slice(i + 1).trim();
+      if (pid && handle) seedStmt.run(pid, `/products/${handle}#product`, Date.now());
+    }
+  });
+  seedAll(seedTxt.split('\n'));
+  console.log(`product_content seed loaded; cache size ${countProductContent.get().n}`);
+} catch (e) { console.error('product_content seed skipped', e.message); }
+
+// per-order coverage diagnostic: how the GA4 client_id WAS (or, when CID_RECOVERY is off, WOULD BE) resolved, plus the
+// checkout method. Lets /health/coverage quantify note (cart) vs checkout (recovered) vs synthetic (unrecoverable).
+db.exec('CREATE TABLE IF NOT EXISTS coverage_log (order_id TEXT PRIMARY KEY, cid_source TEXT, applied INTEGER, other_attr INTEGER, payment TEXT, source_name TEXT, created_at INTEGER)');
+try { db.exec('ALTER TABLE coverage_log ADD COLUMN session_source TEXT'); } catch {}   // additive: how ga_session_id resolved (note/beacon/none/stale)
+const putCoverage      = db.prepare('INSERT OR REPLACE INTO coverage_log (order_id, cid_source, applied, other_attr, payment, source_name, session_source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+const coverageBySource = db.prepare('SELECT cid_source, COUNT(*) n FROM coverage_log WHERE created_at >= ? GROUP BY cid_source');
+const coverageBySession= db.prepare('SELECT session_source, COUNT(*) n FROM coverage_log WHERE created_at >= ? GROUP BY session_source');
+const coverageBySrcName= db.prepare("SELECT COALESCE(source_name,'(null)') source_name, cid_source, session_source, COUNT(*) n FROM coverage_log WHERE created_at >= ? GROUP BY source_name, cid_source, session_source ORDER BY n DESC");
+const coverageMissPay  = db.prepare("SELECT payment, source_name, COUNT(*) n FROM coverage_log WHERE created_at >= ? AND cid_source != 'note' GROUP BY payment, source_name ORDER BY n DESC");
+
+// deferred orders awaiting a late checkout_completed cid beacon (the grace window). Durable so a process restart
+// never drops an order on the sole-source purchase path. Only populated when CID_RECOVERY=1 (see orders-create).
+db.exec('CREATE TABLE IF NOT EXISTS pending_cid (order_id TEXT PRIMARY KEY, raw TEXT, due_at INTEGER, attempts INTEGER DEFAULT 0, created_at INTEGER)');
+const enqueuePending = db.prepare('INSERT OR IGNORE INTO pending_cid (order_id, raw, due_at, attempts, created_at) VALUES (?, ?, ?, 0, ?)');
+const duePending     = db.prepare('SELECT order_id, raw, attempts FROM pending_cid WHERE due_at <= ? ORDER BY due_at LIMIT 20');
+const deletePending  = db.prepare('DELETE FROM pending_cid WHERE order_id = ?');
+const retryPending   = db.prepare('UPDATE pending_cid SET due_at = ?, attempts = attempts + 1 WHERE order_id = ?');
+const purgePending   = db.prepare('DELETE FROM pending_cid WHERE created_at < ?');
+
+// Google Ads enhanced-conversions uploader (see google-ec.js). Dormant unless EC_MODE=validate|live.
+// Own tables in the same SQLite; every call path is caught so it can never break the purchase path.
+const ec = createEcUploader(db, process.env);
+const EC_SWEEP_SECONDS = Number(process.env.EC_SWEEP_SECONDS || 300);
+if (ec.active) setInterval(() => { ec.sweep().catch((e) => console.error('[ec] sweep failed', e.message)); }, EC_SWEEP_SECONDS * 1000);
+
+// Shopify HMAC verification on the raw request body — reject anything unsigned/invalid.
+function verifyHmac(req) {
+  const secret = (SHOPIFY_WEBHOOK_SECRET || '').trim();
+  const sent = req.get('X-Shopify-Hmac-Sha256') || '';
+  const calc = crypto.createHmac('sha256', secret).update(req.body).digest('base64');
+  return sent.length === calc.length && crypto.timingSafeEqual(Buffer.from(sent), Buffer.from(calc));
+}
+
+const app = express();
+
+// liveness + purchase stats
+app.get('/health', (_q, r) => {
+  const all = stats.get(0);
+  r.json({ ok: true, dry_run: DRY_RUN === '1', purchases_total: all.n, last_purchase_at: all.last || null });
+});
+
+// dead-man's switch: 503 when zero purchases posted in the rolling window during trading hours.
+// Point an uptime monitor (or a Railway cron) at this so a silent purchase outage pages someone —
+// post-cutover the relay is the sole purchase source, so silence = zero conversions + a throttled bidder.
+app.get('/health/purchases', (_q, r) => {
+  const since = Date.now() - Number(ALERT_WINDOW_HOURS) * 3600000;
+  const { n, last } = stats.get(since);
+  const hourUtc = new Date().getUTCHours();
+  const trading = hourUtc >= Number(TRADING_START_UTC) && hourUtc < Number(TRADING_END_UTC);
+  const stale = trading && DRY_RUN !== '1' && n === 0;   // never alert in dry-run or outside trading hours
+  r.status(stale ? 503 : 200).json({
+    ok: !stale, trading, dry_run: DRY_RUN === '1',
+    window_hours: Number(ALERT_WINDOW_HOURS),
+    purchases_in_window: n, last_purchase_at: last || null,
+  });
+});
+
+// coverage diagnostic: distribution of how the GA4 client_id resolves (note=cart capture, checkout=cookie-restore,
+// synthetic=unrecoverable) over the last 14d, plus the payment/channel breakdown of the non-cart misses.
+app.get('/health/coverage', (_q, r) => {
+  const since = Date.now() - 14 * 86400000;
+  r.json({
+    ok: true, window_days: 14, recovery_applied: CID_RECOVERY === '1',
+    by_cid_source: coverageBySource.all(since),
+    by_session_source: coverageBySession.all(since),
+    by_source_name: coverageBySrcName.all(since),
+    misses_by_payment: coverageMissPay.all(since),
+    catalogue_ids_cached: countProductContent.get().n,
+  });
+});
+
+// browser-side cid beacon: the Custom Pixel POSTs {checkout_token, cid} at checkout_started so a later cart-bypassing
+// order can recover its real _ga. No credentials/cookies -> Allow-Origin * is safe (payload is only a token->cid map).
+function cidCors(res) {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+}
+// identity-capture observability (2026-08-21): anchor counts + freshest capture, so pixel-paste verification and
+// ongoing capture-rate checks need no DB access. Read-only.
+app.get('/health/identity', (_q, res) => {
+  try {
+    const rows = db.prepare(`SELECT substr(anchor, 1, instr(anchor, ':') - 1) kind, COUNT(*) n, MAX(last_seen) newest
+                             FROM identity_map GROUP BY 1`).all();
+    res.json({ ok: true, anchors: rows.map(r => ({ kind: r.kind, n: r.n, newest: r.newest ? new Date(r.newest).toISOString() : null })) });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// enhanced-conversions observability: mode, queue status counts, recent errors. Read-only.
+app.get('/health/ec', (_q, res) => res.json({ ok: true, ...ec.stats() }));
+
+// Klaviyo identity exchange (see klaviyo-exchange.js): {kx | kla_id} -> server-side profile lookup ->
+// SHA-256 email hash only. CORS locked to the storefront (unlike the open beacon — this one answers).
+const kx = createKxResolver(db, process.env);
+function kxCors(res) {
+  res.set('Access-Control-Allow-Origin', 'https://www.joythestore.com');
+  res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+}
+app.options('/kx-resolve', (_q, r) => { kxCors(r); r.status(204).end(); });
+app.post('/kx-resolve', express.json({ limit: '4kb' }), (req, res) => { kxCors(res); return kx.handle(req, res); });
+app.get('/health/kx', (_q, res) => res.json({ ok: true, ...kx.stats() }));
+
+app.options('/checkout-cid', (_q, r) => { cidCors(r); r.status(204).end(); });
+app.post('/checkout-cid', express.json({ limit: '16kb' }), (req, res) => {
+  cidCors(res);
+  try {
+    const token = String(req.body?.checkout_token || '').trim();
+    const cid   = String(req.body?.cid || '').trim();
+    const sid   = String(req.body?.sid || '').trim();
+    const sct   = String(req.body?.sct || '').trim();
+    const validCid = /^[0-9]+\.[0-9]+$/.test(cid) ? cid : null;   // real GA-format _ga cid only
+    const validSid = /^[0-9]+$/.test(sid) ? sid : null;           // ga_session_id (from _ga_<id> cookie)
+    const validSct = /^[0-9]+$/.test(sct) ? sct : null;           // ga_session_number
+    const validScid = /^[A-Za-z0-9-]{8,64}$/.test(String(req.body?.scid || '').trim()) ? String(req.body.scid).trim() : null;
+    if (token && (validCid || validSid || validScid)) {           // scid alone is enough: it keys the anchor-restore for the no-cid cohort
+      putCheckoutCid.run({ token, cid: validCid, sid: validSid, sct: validSct, scid: validScid, ts: Date.now() });
+      purgeCheckoutCid.run(Date.now() - Number(CHECKOUT_CID_TTL_DAYS) * 86400000);
+    }
+    // identity anchors (capture-only): Shopify Web Pixel clientId + Klaviyo _kx, mapped to the real _ga cid.
+    if (validCid) {
+      const kx   = String(req.body?.kx || '').trim();
+      const now = Date.now();
+      if (validScid) putIdentityMap.run({ anchor: 'scid:' + validScid, cid: validCid, sid: validSid, ts: now });
+      if (/^[A-Za-z0-9_.-]{10,128}$/.test(kx)) putIdentityMap.run({ anchor: 'kx:' + kx,   cid: validCid, sid: validSid, ts: now });
+      purgeIdentityMap.run(now - 400 * 86400000);
+    }
+    // product_id -> Meta catalogue content_id, derived browser-side from the product url. Validate the exact
+    // "/products/<handle>#product" shape so only real catalogue ids enter the join.
+    for (const it of (Array.isArray(req.body?.items) ? req.body.items : [])) {
+      const pid       = String(it?.product_id || '').trim();
+      const contentId = String(it?.content_id || '').trim();
+      if (pid && /^\/products\/[^#\/]+#product$/.test(contentId)) putProductContent.run(pid, contentId, Date.now());
+    }
+  } catch (e) { console.error('checkout-cid store failed', e.message); }
+  return res.status(204).end();                            // fire-and-forget beacon — never make the browser wait
+});
+
+// resolve the GA4 client_id: cart-attribute capture -> checkout-token cookie-restore -> synthetic last-resort.
+// Coverage is always logged (diagnostic). The resolved cid is only APPLIED when CID_RECOVERY=1 — otherwise live
+// behaviour is unchanged (real cid if captured, else dropped as before). Safe to re-run: after the grace window a
+// late checkout beacon upgrades the resolution 'synthetic' -> 'checkout' and re-logs coverage to the recovered state.
+function resolveCid(order, orderId) {
+  let applyCid, sessionObj = {}, cidSource = 'note', sessionSource = 'none';
+  try {
+    const na = {};
+    for (const { name, value } of order.note_attributes || []) na[name] = value;
+    const noteCid = na.attribution_ga_cid;
+    const ckRow = getCheckoutCid.get(String(order.checkout_token || order.checkout_id || ''));
+    // PRECEDENCE FLIP 2026-08-21 (dup fix): prefer the checkout_completed BEACON cid over the note-attribute capture.
+    // The beacon fires seconds before the native pixel's purchase, so it carries the cookie AS IT IS AT PAYMENT TIME;
+    // the note capture can be days older (Safari 7-day cap / long consideration windows rotate _ga in between), which
+    // made the relay and native legs carry DIFFERENT cids for ~14% of orders -> GA4 per-user dedup missed the pair ->
+    // duplicate transactions. Note stays as fallback when no beacon landed. Revert: swap the two branches back.
+    let cid, cidSource;
+    if (ckRow?.cid)   { cid = ckRow.cid; cidSource = 'checkout'; }
+    else if (noteCid) { cid = noteCid;   cidSource = 'note'; }
+    // TIER-2 ANCHOR RESTORE (2026-08-21): no cid captured this visit, but the Shopify Web Pixel clientId (durable,
+    // ITP-exempt) was — look up the cid we recorded for that browser on a PREVIOUS visit and reuse it, so the
+    // purchase lands on the customer's existing GA4 identity instead of a throwaway synthetic one. Fresh captured
+    // cids are never overridden (tiers above always win).
+    if (!cid && CID_ANCHOR_RESTORE === '1' && ckRow?.scid) {
+      const anchorRow = getIdentityMap.get('scid:' + ckRow.scid);
+      if (anchorRow?.cid) { cid = anchorRow.cid; cidSource = 'anchor'; }
+    }
+    if (!cid) { cid = syntheticClientId(orderId); cidSource = 'synthetic'; }
+    applyCid = CID_RECOVERY === '1' ? cid : noteCid;          // measure-only unless recovery is switched on
+    // SESSION (pure attribution enrichment, no double-count risk -> always applied, not flag-gated): prefer the
+    // note-attribute capture (written storefront-side, carries the source-bearing session), fall back to the checkout
+    // beacon. Mirrors the cid precedence; travels with the order so it is independent of the checkout host.
+    const noteSid = /^[0-9]+$/.test(na.attribution_ga_session_id || '')     ? na.attribution_ga_session_id     : null;
+    const noteSct = /^[0-9]+$/.test(na.attribution_ga_session_number || '') ? na.attribution_ga_session_number : null;
+    // freshness: GA4 session_id is the session-start unix ts; a session from a PRIOR browser session (>12h) is
+    // long-expired -> GA4 cannot stitch it (lands (not set), harmless, never mis-attributed). Prefer the note (cart)
+    // session, but when it is stale fall back to the fresher checkout beacon before giving up -> recovers
+    // long-consideration-window returning buyers who added to cart >12h before completing (were dropped to 'stale').
+    const orderTs = Math.floor((Date.parse(order.created_at) || Date.now()) / 1000);
+    const freshSess = (s) => s && /^[0-9]+$/.test(String(s)) && (orderTs - Number(s) <= 43200);
+    let sga_id, sga_num;
+    // session follows the cid source (2026-08-21): when the BEACON cid was chosen, the beacon session is the one that
+    // belongs to that cookie — pairing beacon cid with an older note sid could stitch the purchase into a dead session.
+    const beaconFirst = cidSource === 'checkout';
+    const tryBeacon = () => { if (freshSess(ckRow?.session_id)) { sga_id = ckRow.session_id; sga_num = ckRow.session_number || undefined; sessionSource = 'beacon'; return true; } return false; };
+    const tryNote   = () => { if (freshSess(noteSid))           { sga_id = noteSid;          sga_num = noteSct || undefined;              sessionSource = 'note';   return true; } return false; };
+    if (beaconFirst ? (tryBeacon() || tryNote()) : (tryNote() || tryBeacon())) { /* resolved */ }
+    else if (noteSid || ckRow?.session_id) { sessionSource = 'stale'; }
+    else                                   { sessionSource = 'none'; }
+    sessionObj = { ga_session_id: sga_id, ga_session_number: sga_num };
+    const otherAttr = ['attribution_gclid','attribution_fbp','attribution_fbc','attribution_fbclid','attribution_gbraid','attribution_wbraid','attribution_msclkid'].some((k) => na[k]);
+    putCoverage.run(orderId, cidSource, CID_RECOVERY === '1' ? 1 : 0, otherAttr ? 1 : 0,
+      (order.payment_gateway_names || []).join(',') || null, order.source_name || null, sessionSource, Date.now());
+    // DIAGNOSTIC (2026-07-10): log the ACTUAL resolved values per order so we can see whether the captured cid/sid are
+    // valid GA4 identifiers (they pass a numeric check but ~82% "real" yet only ~9% attribute -> suspect malformed values).
+    console.log('[values]', orderId, 'cid='+applyCid, 'cidSrc='+cidSource, 'sid='+(sga_id||'-'), 'sct='+(sga_num||'-'),
+      'sessSrc='+sessionSource, 'noteCid='+(noteCid||'-'), 'noteSid='+(noteSid||'-'), 'noteSct='+(noteSct||'-'));
+  } catch (e) { console.error('cid resolve/coverage failed', orderId, e.message); }
+  return { applyCid, sessionObj, cidSource };
+}
+
+// build the clean GA4 purchase event and POST it to sGTM /data. Shared by the live webhook path and the
+// deferred-order sweeper. Idempotent via the processed-claim; returns a status the caller maps to a response.
+async function emitPurchase(order, orderId, applyCid, sessionObj) {
+  // map this order's products to their captured Meta catalogue content_ids (best-effort; uncaptured fall back to variant id).
+  const contentByProductId = {};
+  try {
+    for (const li of order.line_items || []) {
+      const pid = li.product_id != null ? String(li.product_id) : '';
+      if (pid && !(pid in contentByProductId)) {
+        const row = getProductContent.get(pid);
+        if (row?.content_id) contentByProductId[pid] = row.content_id;
+      }
+    }
+  } catch (e) { console.error('content map lookup failed', orderId, e.message); }
+
+  const event = buildEvent(order, orderId, applyCid, contentByProductId, sessionObj);
+
+  // DRY_RUN: log the transformed event and stop — lets us confirm all data passes back before firing live tags
+  if (DRY_RUN === '1') { console.log('[DRY_RUN] order', orderId, JSON.stringify(event)); return { status: 'dry' }; }
+
+  // idempotency — atomically claim the order id (orders/create can resend on edits/retries)
+  if (claim.run(orderId, Date.now()).changes === 0) return { status: 'duplicate' };
+
+  // ---- transport 'collect' (fix c restage): GA4 MP2 -> stock GA4 client /g/collect, cid+sid+sct in the wire format ----
+  if (GA4_PURCHASE_TRANSPORT === 'collect') {
+    const hasRealCid = !!applyCid && applyCid !== syntheticClientId(orderId);
+    if (!hasRealCid && GA4_COLLECT_SYNTHETIC !== '1') {
+      console.log('[purchase] skipped (no captured cid, GA4_COLLECT_SYNTHETIC=0)', orderId);
+      return { status: 'ok' };            // claimed + acknowledged; the native pixel leg (if any) is the only GA4 record for this order
+    }
+    let phase = 'pre-send';
+    try {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), Number(GA4_COLLECT_TIMEOUT_MS));
+      phase = 'in-flight';
+      try { await sendCollect(order, orderId, applyCid, sessionObj, event.items, { signal: ac.signal }); }
+      finally { clearTimeout(t); }
+      console.log('[purchase] sent /g/collect', orderId, 'cid=' + (hasRealCid ? 'real' : 'synthetic'), 'sid=' + (sessionObj?.ga_session_id || '-'));
+      return { status: 'ok' };
+    } catch (err) {
+      // Idempotency hardening (review 2026-07-16): a non-2xx is a definite failure -> unclaim so Shopify's retry re-sends.
+      // A timeout/abort is AMBIGUOUS (the hit may have landed) -> keep the claim and ACK 200, never risk a same-transport
+      // duplicate. Log loudly so a stuck outage is visible in /health.
+      const ambiguous = err?.name === 'AbortError';
+      if (!ambiguous) unclaim.run(orderId);
+      console.error('collect failed', orderId, phase, ambiguous ? 'TIMEOUT (claim kept, no retry)' : err.message);
+      return { status: ambiguous ? 'ok' : 'error' };
+    }
+  }
+  // ---- transport 'data' (current live path): custom JSON -> Stape Webhook Data Client (/data, client 25) ----
+  try {
+    const r = await fetch(STAPE_DATA_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+    });
+    if (!r.ok) throw new Error(`stape ${r.status}`);
+    console.log('[purchase] sent', orderId);
+    return { status: 'ok' };
+  } catch (err) {
+    unclaim.run(orderId);                 // release so a retry re-processes
+    console.error('process failed', orderId, err.message);
+    return { status: 'error' };
+  }
+}
+
+// deferred-order sweeper: re-resolve each due order (the checkout_completed beacon may now have landed -> real cid)
+// and emit it. Self-retrying because we already ACKed Shopify 200, so Shopify will not retry these for us. Durable:
+// rows survive a restart and the sweeper resumes them on boot. A no-op while pending_cid is empty (measure-only/dry).
+async function sweepPending() {
+  let rows = [];
+  try { rows = duePending.all(Date.now()); } catch (e) { console.error('sweep query failed', e.message); return; }
+  for (const row of rows) {
+    let order;
+    try { order = JSON.parse(row.raw); } catch { deletePending.run(row.order_id); continue; }
+    const { applyCid, sessionObj } = resolveCid(order, row.order_id);   // re-resolve: beacon may have arrived
+    const result = await emitPurchase(order, row.order_id, applyCid, sessionObj);
+    if (result.status === 'ok' || result.status === 'duplicate' || result.status === 'dry') {
+      deletePending.run(row.order_id);
+    } else if (row.attempts + 1 >= Number(CID_MAX_ATTEMPTS)) {
+      deletePending.run(row.order_id);
+      console.error('[deferred] gave up after retries', row.order_id);
+    } else {
+      retryPending.run(Date.now() + Number(CID_RETRY_SECONDS) * 1000, row.order_id);
+    }
+  }
+  try { purgePending.run(Date.now() - 6 * 3600000); } catch {}   // safety backstop: drop anything stuck > 6h
+}
+setInterval(() => { sweepPending().catch((e) => console.error('sweep failed', e.message)); }, Number(CID_SWEEP_SECONDS) * 1000);
+
+// raw body required for HMAC
+app.post('/webhooks/orders-create', express.raw({ type: '*/*', limit: '2mb' }), async (req, res) => {
+  if (!verifyHmac(req)) return res.status(401).send('invalid hmac');   // reject anything unsigned/invalid
+
+  let order;
+  try { order = JSON.parse(req.body.toString('utf8')); } catch { return res.status(400).send('bad json'); }
+  const orderId = String(order.id || '');
+  if (!orderId) return res.status(400).send('no order id');
+
+  // Skip non-revenue orders (ReturnGO exchanges, 100%-gift-card / 100%-off): the customer paid nothing, so a purchase
+  // event would only add a zero-value transaction to GA4 + a zero-value conversion to ad bidding. ACK 200 (no Shopify retry).
+  if (!(Number(order.total_price) > 0)) {
+    console.log('[skip] zero-value order', orderId, 'tags', order.tags || '');
+    return res.status(200).send('skipped zero-value');
+  }
+
+  // Google enhanced-conversions: enqueue an ENHANCEMENT adjustment for every order except explicit consent
+  // denials (GE_consentPrefs marketing:"no", gated inside buildEnhancement; missing consent = included).
+  // Never throws; no-op unless EC_MODE=validate|live.
+  ec.enqueue(order, orderId);
+
+  // persist hashed identity keyed by order id so a later refund can be matched to the customer (Option A).
+  // wrapped so the identity store can never break the live purchase path.
+  try {
+    putIdentity.run(orderId, JSON.stringify(buildStoredIdentity(order)), Date.now());
+    purgeIdentity.run(Date.now() - Number(RETENTION_DAYS) * 86400000);
+  } catch (e) { console.error('identity store failed', orderId, e.message); }
+
+  const { applyCid, sessionObj, cidSource } = resolveCid(order, orderId);
+
+  // GRACE WINDOW (only when recovery is applied): a still-unresolved cid would fall back to synthetic, but
+  // PayPal/Klarna/express flows fire the cid beacon ONLY at checkout_completed — which can land a beat AFTER this
+  // webhook. Defer the order (durable) so the sweeper re-resolves once the beacon arrives, instead of locking in
+  // synthetic. Measure-only (CID_RECOVERY unset) or DRY_RUN keeps the original synchronous behaviour untouched.
+  if (CID_RECOVERY === '1' && cidSource === 'synthetic' && DRY_RUN !== '1') {
+    try {
+      enqueuePending.run(orderId, req.body.toString('utf8'), Date.now() + Number(CID_GRACE_SECONDS) * 1000, Date.now());
+      console.log('[deferred] order', orderId, 'awaiting checkout cid beacon');
+      return res.status(200).send('deferred for cid recovery');
+    } catch (e) {
+      console.error('enqueue failed; processing immediately', orderId, e.message);  // fail safe: emit now
+    }
+  }
+
+  const result = await emitPurchase(order, orderId, applyCid, sessionObj);
+  if (result.status === 'dry') return res.status(200).send('dry-run ok');
+  if (result.status === 'duplicate') return res.status(200).send('duplicate ignored');
+  if (result.status === 'error') return res.status(500).send('processing failed');
+  return res.status(200).send('ok');
+});
+
+// refunds/create -> GA4 refund event. Dormant unless REFUNDS_ENABLED=1 (gated go-live with the GA4 refund leg).
+app.post('/webhooks/refunds-create', express.raw({ type: '*/*', limit: '2mb' }), async (req, res) => {
+  if (!verifyHmac(req)) return res.status(401).send('invalid hmac');
+  let refund;
+  try { refund = JSON.parse(req.body.toString('utf8')); } catch { return res.status(400).send('bad json'); }
+  const refundId = String(refund.id || '');
+  if (!refundId) return res.status(400).send('no refund id');
+
+  const idRow = getIdentity.get(String(refund.order_id || ''));   // recover the purchase's hashed identity by order id
+  const identity = idRow ? JSON.parse(idRow.identity) : undefined;
+  const event = buildRefundEvent(refund, identity);
+
+  if (REFUNDS_ENABLED !== '1' || DRY_RUN === '1') {        // dormant: log the event, post nothing
+    console.log('[refund DORMANT] refund', refundId, 'order', String(refund.order_id || ''), JSON.stringify(event));
+    return res.status(200).send('dormant');
+  }
+  if (claim.run(`refund:${refundId}`, Date.now()).changes === 0) return res.status(200).send('duplicate ignored');
+  try {
+    const r = await fetch(STAPE_DATA_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(event) });
+    if (!r.ok) throw new Error(`stape ${r.status}`);
+    console.log('[refund] sent', refundId);
+    return res.status(200).send('ok');
+  } catch (err) {
+    unclaim.run(`refund:${refundId}`);                     // release so Shopify's retry re-processes
+    console.error('refund failed', refundId, err.message);
+    return res.status(500).send('processing failed');
+  }
+});
+
+// orders/cancelled -> log only. refunds/create is the sole GA4 refund source (avoids double-correcting a
+// cancellation that also issues a refund). A cancel without a refund has no counted revenue to reverse.
+app.post('/webhooks/orders-cancelled', express.raw({ type: '*/*', limit: '2mb' }), async (req, res) => {
+  if (!verifyHmac(req)) return res.status(401).send('invalid hmac');
+  let order;
+  try { order = JSON.parse(req.body.toString('utf8')); } catch { return res.status(400).send('bad json'); }
+  console.log('[cancelled] order', String(order.id || ''), 'financial_status', order.financial_status || '');
+  return res.status(200).send('ok');
+});
+
+app.listen(PORT, () => console.log(`joy-purchase-relay :${PORT} -> ${STAPE_DATA_URL}`));

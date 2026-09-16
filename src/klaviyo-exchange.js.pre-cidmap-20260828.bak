@@ -1,0 +1,131 @@
+// Klaviyo identity exchange (2026-08-28). Resolves a Klaviyo _kx URL param (email-click exchange id) or the
+// $exchange_id inside the __kla_id cookie to the profile's email, SHA-256 hashed SERVER-SIDE. The raw email
+// NEVER leaves this process — the browser receives only the hash, which it stores as the joy_em_sha256 cookie
+// (same value/format the theme's v1/v2/v5 capture paths write), so Klaviyo subscribers who never bought get
+// recognised on browse events (Meta EMQ email on VC/ATC/IC).
+//
+// Follows the google-ec.js patterns: self-contained module, own SQLite table, every entry point caught,
+// dormant without its credential. Isolation: can never break the purchase path.
+//
+// Abuse posture: the endpoint is an oracle only for callers already holding a valid Klaviyo exchange token,
+// and answers only with a salt-free SHA-256 of the email (what the site already exposes client-side for its
+// own users). Tight input validation + per-IP and global rate limits + response caching on top.
+import crypto from 'node:crypto';
+
+const sha256hex = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
+
+// _kx values look like "<base64ish-identifier>.<company_id>". Accept a conservative charset; URL-decode
+// first if the browser passed a still-encoded value (Klaviyo docs call this out).
+export function normaliseKx(raw) {
+  let v = String(raw || '').trim();
+  if (!v) return null;
+  if (v.includes('%')) { try { v = decodeURIComponent(v); } catch { return null; } }
+  return /^[A-Za-z0-9_.=+/-]{8,300}$/.test(v) ? v : null;
+}
+
+// __kla_id is either a bare anonymous UUID (unresolvable — no PII behind it) or base64 JSON carrying
+// $exchange_id once the device has been identified. Extract the exchange id when present.
+export function exchangeIdFromKlaId(raw) {
+  const v = String(raw || '').trim();
+  if (!v || v.length > 2048) return null;
+  try {
+    const decoded = Buffer.from(decodeURIComponent(v), 'base64').toString('utf8');
+    const j = JSON.parse(decoded);
+    return normaliseKx(j.$exchange_id || j.exchange_id || '');
+  } catch { return null; }
+}
+
+export function createKxResolver(db, env = process.env) {
+  const {
+    KLAVIYO_JOY_API_KEY,
+    KX_KLAVIYO_REVISION = '2026-07-15',
+    KX_TIMEOUT_MS = 5000,
+    KX_RATE_PER_IP_MIN = 6,          // per-IP requests/minute
+    KX_RATE_GLOBAL_MIN = 30,         // global requests/minute (Klaviyo's own limit is 75/s — this is web-abuse guard)
+    KX_NEG_TTL_HOURS = 6,            // re-try window for unresolved tokens
+    KX_POS_TTL_DAYS = 90,            // cache horizon for resolved hashes (matches the cookie's 90d life)
+  } = env;
+
+  const active = !!KLAVIYO_JOY_API_KEY;
+  if (!active) console.error('[kx] KLAVIYO_JOY_API_KEY missing — /kx-resolve disabled');
+
+  // cache: kx token -> email hash (or NULL = known-unresolvable). Only the hash is ever at rest.
+  db.exec(`CREATE TABLE IF NOT EXISTS kx_cache (kx TEXT PRIMARY KEY, em_hash TEXT, resolved_at INTEGER)`);
+  const cGet   = db.prepare('SELECT em_hash, resolved_at FROM kx_cache WHERE kx = ?');
+  const cPut   = db.prepare('INSERT OR REPLACE INTO kx_cache (kx, em_hash, resolved_at) VALUES (?, ?, ?)');
+  const cPurge = db.prepare('DELETE FROM kx_cache WHERE resolved_at < ?');
+  const cStats = db.prepare('SELECT COUNT(*) n, SUM(CASE WHEN em_hash IS NOT NULL THEN 1 ELSE 0 END) resolved FROM kx_cache');
+
+  // sliding-window rate limiter (in-memory; resets on restart, which is fine for an abuse guard)
+  const ipHits = new Map();
+  let globalHits = [];
+  function rateLimited(ip) {
+    const now = Date.now(), cut = now - 60000;
+    globalHits = globalHits.filter((t) => t > cut);
+    if (globalHits.length >= Number(KX_RATE_GLOBAL_MIN)) return true;
+    const arr = (ipHits.get(ip) || []).filter((t) => t > cut);
+    if (arr.length >= Number(KX_RATE_PER_IP_MIN)) { ipHits.set(ip, arr); return true; }
+    arr.push(now); ipHits.set(ip, arr); globalHits.push(now);
+    if (ipHits.size > 5000) ipHits.clear();            // memory backstop
+    return false;
+  }
+
+  const counters = { hits: 0, cache_hits: 0, resolved: 0, unresolved: 0, rate_limited: 0, bad_input: 0, upstream_error: 0 };
+
+  async function klaviyoLookup(kx) {
+    const filter = encodeURIComponent(`equals(_kx,'${kx}')`);
+    const url = `https://a.klaviyo.com/api/profiles/?filter=${filter}&fields[profile]=email`;
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), Number(KX_TIMEOUT_MS));
+    try {
+      const r = await fetch(url, {
+        headers: { Authorization: `Klaviyo-API-Key ${KLAVIYO_JOY_API_KEY}`, revision: KX_KLAVIYO_REVISION, accept: 'application/vnd.api+json' },
+        signal: ac.signal,
+      });
+      if (r.status === 400) return null;   // "Invalid _kx token" = expired/dead exchange id -> unresolvable, negative-cache it
+      if (!r.ok) throw new Error(`klaviyo ${r.status}`);
+      const j = await r.json();
+      const email = j?.data?.[0]?.attributes?.email;
+      return email ? sha256hex(String(email).trim().toLowerCase()) : null;   // hash immediately; raw email dies here
+    } finally { clearTimeout(t); }
+  }
+
+  // Express handler for POST /kx-resolve. Body: {kx?, kla_id?}. Responds {em: "<sha256hex>"} or {} — never PII.
+  async function handle(req, res) {
+    try {
+      if (!active) return res.status(503).json({});
+      const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+      counters.hits++;
+      if (rateLimited(ip)) { counters.rate_limited++; return res.status(429).json({}); }
+
+      const kx = normaliseKx(req.body?.kx) || exchangeIdFromKlaId(req.body?.kla_id);
+      if (!kx) { counters.bad_input++; return res.status(400).json({}); }
+
+      const row = cGet.get(kx);
+      if (row) {
+        const age = Date.now() - row.resolved_at;
+        if (row.em_hash && age < Number(KX_POS_TTL_DAYS) * 86400000) { counters.cache_hits++; return res.json({ em: row.em_hash }); }
+        if (!row.em_hash && age < Number(KX_NEG_TTL_HOURS) * 3600000) { counters.cache_hits++; return res.json({}); }
+      }
+
+      let hash = null;
+      try { hash = await klaviyoLookup(kx); }
+      catch (e) { counters.upstream_error++; console.error('[kx] lookup failed', e.message); return res.status(502).json({}); }
+
+      cPut.run(kx, hash, Date.now());
+      try { cPurge.run(Date.now() - Number(KX_POS_TTL_DAYS) * 86400000); } catch {}
+      if (hash) { counters.resolved++; console.log('[kx] resolved -> hash', hash.slice(0, 12) + '…'); return res.json({ em: hash }); }
+      counters.unresolved++; return res.json({});
+    } catch (e) {
+      console.error('[kx] handler failed', e.message);
+      return res.status(500).json({});
+    }
+  }
+
+  function stats() {
+    try { const c = cStats.get(); return { active, ...counters, cache_rows: c.n, cache_resolved: c.resolved || 0 }; }
+    catch (e) { return { active, error: e.message }; }
+  }
+
+  return { handle, stats, active };
+}

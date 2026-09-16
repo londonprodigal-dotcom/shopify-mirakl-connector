@@ -1,0 +1,200 @@
+// Pure transform: raw Shopify orders/create JSON -> clean server purchase event for sGTM /data.
+// No side effects (no DB, no network) so it can be unit-tested in isolation.
+import crypto from 'node:crypto';
+
+export const clean = (o) =>
+  Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== ''));
+
+const sha256 = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
+
+// Deterministic GA4-format client_id ("int.int") derived from the order id. Used as the LAST-RESORT cid when
+// neither the cart-attribute capture nor the checkout-token restore yields a real _ga (true shop.app / consent-denied).
+// Stable per order (so retries dedupe) and unique across orders (so each lands as its own user). Such purchases
+// count correctly but carry no real session — they surface as direct/unassigned, which is the truthful attribution.
+export function syntheticClientId(orderId) {
+  const h = crypto.createHash('sha256').update('cid:' + String(orderId)).digest();
+  return `${h.readUInt32BE(0)}.${h.readUInt32BE(4)}`;
+}
+
+export function buildEvent(order, orderId, clientId, contentByProductId = {}, session = {}) {
+  const na = {};
+  for (const { name, value } of order.note_attributes || []) na[name] = value;   // theme snippet writes attribution_*
+
+  const fbclid = na.attribution_fbclid;
+  let fbc = na.attribution_fbc;
+  if (!fbc && fbclid) fbc = `fb.1.${Date.parse(order.created_at) || Date.now()}.${fbclid}`;  // derive _fbc from fbclid
+
+  const b  = order.billing_address || order.shipping_address || {};
+  const cd = order.client_details || {};
+
+  const user_data = clean({
+    email: order.email || order.contact_email || order.customer?.email,
+    phone: order.phone || b.phone || order.customer?.phone,
+    first_name: b.first_name, last_name: b.last_name,
+    city: b.city, region: b.province_code, zip: b.zip, country: b.country_code,
+    customer_id: order.customer?.id ? String(order.customer.id) : undefined,
+    external_id: order.customer?.id ? sha256(String(order.customer.id)) : undefined,  // SHA-256 of customer id; stable across events for stitching, absent for guests
+    fbp: na.attribution_fbp, fbc,
+    gclid: na.attribution_gclid, gbraid: na.attribution_gbraid,
+    wbraid: na.attribution_wbraid, msclkid: na.attribution_msclkid,
+  });
+
+  // GA4 item_id stays the bare VARIANT id. Meta content_ids must equal the catalogue retailer_id, which for JOY is the
+  // PRODUCT-level handle path "/products/<handle>#product" (verified against catalogue 929801141125889). The order
+  // webhook has no handle, so contentByProductId is the {product_id -> "/products/<handle>#product"} map captured by the
+  // checkout pixel and joined here. Fallback to bare variant id only if a product's content id wasn't captured yet.
+  const lineItems = (order.line_items || []).map((li) => {
+    const variantId = li.variant_id != null ? String(li.variant_id) : '';
+    const productId = li.product_id != null ? String(li.product_id) : '';
+    const contentId = contentByProductId[productId] || variantId || productId;   // Meta catalogue match key
+    return {
+      variantId, contentId,
+      item: clean({
+        item_id: variantId || productId,                                     // GA4: prefer variant id; product id only as fallback
+        item_name: li.name || li.title,
+        item_sku: li.sku || undefined,
+        price: Number(li.price),
+        quantity: li.quantity,
+      }),
+    };
+  });
+
+  const items       = lineItems.map((x) => x.item);                          // GA4 ecommerce shape (variant-keyed)
+  const content_ids = [...new Set(lineItems.map((x) => x.contentId).filter(Boolean))];  // Meta content_ids = unique catalogue ids (product-level)
+  const contents    = lineItems.map((x) => clean({                           // Meta contents = [{id, quantity, item_price}]
+    id: x.contentId || undefined,
+    quantity: x.item.quantity,
+    item_price: x.item.price,
+  }));
+
+  const value = Number(order.subtotal_price);           // ex-shipping, VAT-inclusive — confirm vs native + lock
+  const currency = order.currency;
+
+  const eventTime = Math.floor((Date.parse(order.created_at) || Date.now()) / 1000);  // attribute to when the order happened, not when it arrived
+
+  return clean({
+    event_name: 'purchase',
+    event_id: orderId,                                  // top-level dedup key (= bare numeric order id)
+    client_id: clientId || na.attribution_ga_cid,       // resolved cid (note-attr -> checkout-token restore -> synthetic), passed by the caller; falls back to the raw note-attr for safety
+    // GA4 session stitching: without session_id a server event spawns a NEW session with no source/medium -> lands as
+    // (not set)/direct. Captured from the _ga_<id> cookie at checkout (beacon). Absent for orders with no captured session.
+    ga_session_id: session.ga_session_id,
+    ga_session_number: session.ga_session_number,
+    action_source: 'website',
+    event_time: eventTime,                              // unix seconds (Meta event_time; harmless to GA4)
+    ip_override: cd.browser_ip || order.browser_ip,     // REAL customer IP, not the server's
+    user_agent: cd.user_agent,                          // REAL customer UA
+    user_data,
+    // top-level GA4 purchase params — the sgtmgaaw GA4 tag reads these (it does NOT descend into ecommerce.*)
+    transaction_id: orderId,
+    value,
+    currency,
+    items,
+    // top-level click ids — the server-side Google Ads conversion tag (sgtmadsct) + Conversion Linker read gclid/
+    // gbraid/wbraid from here (cookie-less server context). Absent for cart-bypassing orders -> Google falls back to
+    // enhanced conversions from user_data. GA4/Meta ignore these.
+    gclid: na.attribution_gclid,
+    gbraid: na.attribution_gbraid,
+    wbraid: na.attribution_wbraid,
+    ecommerce: {                                        // kept for the ed variables (31-47) + Meta/Pinterest templates
+      transaction_id: orderId,
+      value,
+      currency,
+      items,
+      content_ids,                                      // Meta CAPI: explicit content_ids (bare variant ids)
+      content_type: 'product',
+      contents,                                         // Meta CAPI: explicit contents [{id, quantity, item_price}]
+    },
+  });
+}
+
+// refunds/create -> GA4 first-class `refund` event. Built from the (thin) refund webhook alone:
+// transaction_id = order_id (same bare-numeric key as the purchase, so GA4 matches it to the original),
+// value = sum of refunded line subtotals (ex-shipping, mirrors the purchase value basis), items from refund_line_items.
+// No PII: the refund webhook carries no customer identity (Meta/Google legs will need an order-identity join later).
+export function buildRefundEvent(refund, identity) {
+  const orderId  = String(refund.order_id || '');
+  const refundId = String(refund.id || '');
+  const rlis = refund.refund_line_items || [];
+
+  const lineItems = rlis.map((rli) => {
+    const li = rli.line_item || {};
+    const variantId = li.variant_id != null ? String(li.variant_id) : '';
+    return {
+      variantId,
+      item: clean({
+        item_id: variantId || (li.product_id != null ? String(li.product_id) : ''),
+        item_name: li.name || li.title,
+        item_sku: li.sku || undefined,
+        price: li.price != null ? Number(li.price) : undefined,
+        quantity: rli.quantity,
+      }),
+    };
+  });
+
+  const items       = lineItems.map((x) => x.item);
+  const content_ids = lineItems.map((x) => x.variantId).filter(Boolean);
+  const contents    = lineItems.map((x) => clean({ id: x.variantId || undefined, quantity: x.item.quantity, item_price: x.item.price }));
+
+  const refundedAmount = rlis.reduce(
+    (s, rli) => s + Number(rli.subtotal ?? rli.subtotal_set?.shop_money?.amount ?? 0), 0);
+  const value = Number(refundedAmount.toFixed(2));                                 // GA4 refund: items+value present => partial refund supported
+  const currency = rlis[0]?.subtotal_set?.shop_money?.currency_code || 'GBP';      // JOY is GBP-only; refund webhook rarely carries a top-level currency
+  const eventTime = Math.floor((Date.parse(refund.created_at || refund.processed_at) || Date.now()) / 1000);
+
+  return clean({
+    event_name: 'refund',
+    event_id: refundId,                                 // dedup the refund SIGNAL on refund id (distinct from the purchase event_id)
+    action_source: 'website',
+    event_time: eventTime,
+    user_data: identity,                                // hashed identity recovered from the order-identity store (GA4 ignores it; Meta/Google use it)
+    transaction_id: orderId,                            // matches the original purchase (bare numeric)
+    value,
+    currency,
+    items,
+    ecommerce: {
+      transaction_id: orderId,
+      value,
+      currency,
+      items,
+      content_ids,
+      content_type: 'product',
+      contents,
+    },
+  });
+}
+
+// --- Order-identity store (Option A) ---
+// Persist identity at purchase keyed by order id, then join it onto the refund (whose webhook carries no identity).
+// Values are SHA-256 hashed with Meta's normalisation (PII minimisation at rest). Because they are PRE-hashed,
+// the Meta/Google refund tags must consume them in ALREADY-HASHED mode (do NOT let the tag hash again).
+// fbp / fbc / external_id are opaque ids, stored as-is.
+const _norm   = (s) => String(s).trim().toLowerCase();
+const _digits = (s) => String(s).replace(/[^0-9]/g, '');
+
+export function buildStoredIdentity(order) {
+  const na = {};
+  for (const { name, value } of order.note_attributes || []) na[name] = value;
+  const fbclid = na.attribution_fbclid;
+  let fbc = na.attribution_fbc;
+  if (!fbc && fbclid) fbc = `fb.1.${Date.parse(order.created_at) || Date.now()}.${fbclid}`;
+
+  const b = order.billing_address || order.shipping_address || {};
+  const email = order.email || order.contact_email || order.customer?.email;
+  const phone = order.phone || b.phone || order.customer?.phone;
+  const hx = (v, normFn) => (v != null && String(v).trim() !== '') ? sha256(normFn(v)) : undefined;
+
+  return clean({
+    email:       hx(email, _norm),
+    phone:       hx(phone, _digits),
+    first_name:  hx(b.first_name, _norm),
+    last_name:   hx(b.last_name, _norm),
+    city:        hx(b.city, (s) => _norm(s).replace(/\s+/g, '')),
+    region:      hx(b.province_code, _norm),
+    zip:         hx(b.zip, (s) => _norm(s).replace(/\s+/g, '')),
+    country:     hx(b.country_code, _norm),
+    external_id: order.customer?.id ? sha256(String(order.customer.id)) : undefined,
+    fbp: na.attribution_fbp,
+    fbc,
+  });
+}

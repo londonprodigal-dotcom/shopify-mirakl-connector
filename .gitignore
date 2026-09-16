@@ -1,0 +1,21 @@
+# dependencies (installed in the Docker build, never committed)
+node_modules/
+
+# runtime + Railway persistent volume artefacts — the identity store lives here, never in Git
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+data/
+/tmp/
+
+# secrets — all credentials are injected as Railway env vars at runtime
+.env
+.env.*
+*.env
+credentials/
+
+# logs / editor noise
+*.log
+npm-debug.log*
+.DS_Store

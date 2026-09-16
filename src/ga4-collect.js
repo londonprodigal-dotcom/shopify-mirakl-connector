@@ -1,0 +1,125 @@
+// ============================================================================
+// FIX (c) — GA4 (not set) stitch repair. WIRED IN behind GA4_PURCHASE_TRANSPORT=collect (index.js emitPurchase), 2026-08-18.
+// Pairs with sGTM ws15: client 1 cookieManagement=js (storefront + checkout share the _ga cid) and tag 5 unblocked.
+// GA4 dedup key for the native-pixel + relay pair = transaction_id WITHIN THE SAME client_id.
+// ----------------------------------------------------------------------------
+// Routes the server `purchase` through the container's STOCK sGTM GA4 client
+// (client 1, gaaw_client, /g/collect), which natively reads cid/sid/sct from the
+// request — instead of the Stape "Webhook - Data Client" (/data, client 25) whose
+// FPID identity handling drops the browser session, producing 100% (not set).
+//
+// GATED: enable ONLY after sGTM Preview confirms the Webhook client is the fault
+// (see JOY-GA4-notset-TROUBLESHOOT-HANDOFF-2026-07-07.md §5-6). To enable, import
+// sendCollect here from index.js and call it in emitPurchase() in place of the
+// STAPE_DATA_URL POST (exact edit documented in the handoff). This file is inert
+// until imported, so it is safe to have in the tree pre-deploy.
+//
+// Design rules (per review session 2026-07-07):
+//  - Sends NO _fv / _ss / dl / dr  => the purchase JOINS the existing session,
+//    never opens a new one (opening one would re-pollute the metric being fixed).
+//  - Never fabricates a sid. Absent session => omit sid; GA4 attributes via cid if
+//    the session is known, else the accepted ~40% (not set) floor (wallet/express/
+//    consent-denied). cid is always sent (real or synthetic).
+//  - value basis MIRRORS the current path (order.subtotal_price, ex-shipping,
+//    VAT-incl). Do NOT change the revenue basis in this change; if total-incl-
+//    shipping is wanted later, change the epn.value line only.
+//  - On the purchase event only GA4 tag5 is active (Meta fires only on funnel
+//    events; Pinterest purchase is paused), so swapping /data -> /g/collect for
+//    purchase double-fires nothing and needs no trigger change (trigger 4 = all).
+// ============================================================================
+
+import crypto from 'node:crypto';
+import { syntheticClientId } from './transform.js';
+
+// Phase 1 (2026-08-21): GA4 User-ID. Stable pseudonymous uid from the Shopify customer id so GA4's reporting
+// identity stitches every purchase by the same customer across cookie resets and devices. Hash (not raw id)
+// keeps it pseudonymous; deterministic so the same customer always maps to the same uid.
+export function userIdFor(order) {
+  const custId = order?.customer?.id;
+  if (custId == null || custId === '') return null;
+  return 'c' + crypto.createHash('sha256').update('uid:' + String(custId)).digest('hex').slice(0, 40);
+}
+
+const GA4_COLLECT_URL = 'https://sst.joythestore.com/g/collect';
+const MEASUREMENT_ID  = 'G-CHYXYNLPR0';
+
+// DL ATTRIBUTION RESCUE (2026-08-28, flag GA4_DL_RESCUE=1): for orders with NO stitched session — the cohort
+// that permanently lands Unassigned/(not set) — build a synthetic page URL from the order's captured attribution
+// (attribution_gclid / non-direct GE_utmParams) and send it as `dl`. GA4 parses gclid/utm_* out of the page URL,
+// so the sourceless purchase opens a session WITH a source instead of an Unassigned one. NEVER applied when a
+// real session id exists: a fresh gclid mid-session would fork a new session and break the stitch (the design
+// rule above stands for the stitched cohort — this rescue only touches hits that had no session to protect).
+export function rescueDl(order) {
+  const na = {};
+  for (const { name, value } of order.note_attributes || []) na[name] = value;
+  const p = new URLSearchParams();
+  if (na.attribution_gclid)  p.set('gclid',  na.attribution_gclid);
+  if (na.attribution_gbraid) p.set('gbraid', na.attribution_gbraid);
+  if (na.attribution_wbraid) p.set('wbraid', na.attribution_wbraid);
+  // GE_utmParams: "utm_source=facebook&utm_medium=paid&utm_campaign=123" — skip the direct/(none)/(not-set) stamps
+  try {
+    const utm = new URLSearchParams(na.GE_utmParams || '');
+    const src = utm.get('utm_source');
+    if (src && src !== 'direct') {
+      for (const k of ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term']) {
+        const v = utm.get(k);
+        if (v && v !== '(none)' && v !== '(not-set)') p.set(k, v);
+      }
+    }
+  } catch {}
+  const qs = p.toString();
+  return qs ? 'https://www.joythestore.com/?' + qs : null;
+}
+
+// GA4 item -> MP2 tilde-encoded "prN" value. Sub-fields id/nm/pr/qt (br/ca/va optional).
+// The WHOLE value is percent-encoded by URLSearchParams; strip ~ from free-text so it
+// can't break the delimiter.
+function itemParam(it) {
+  const s = (v) => String(v).replace(/~/g, '-');
+  const parts = [];
+  if (it.item_id   != null && it.item_id   !== '') parts.push('id' + s(it.item_id));
+  if (it.item_name != null && it.item_name !== '') parts.push('nm' + s(it.item_name));
+  if (it.price     != null) parts.push('pr' + Number(it.price));
+  if (it.quantity  != null) parts.push('qt' + Number(it.quantity));
+  return parts.join('~');
+}
+
+// Build the /g/collect URL from an order + already-resolved cid/session (same inputs emitPurchase holds).
+export function buildCollectUrl(order, orderId, applyCid, session = {}, items = []) {
+  const p = new URLSearchParams();
+  p.set('v', '2');
+  p.set('tid', MEASUREMENT_ID);
+  // GEO FIX 2026-08-21: _uip = customer IP. Probe-verified as the ONLY override Stape/GA4 honours
+  // (X-Forwarded-For and X-Stape-User-Ip are both ignored -> hits geolocated to the relay's datacentre).
+  const _ip = order.client_details?.browser_ip || order.browser_ip;
+  if (_ip) p.set('_uip', String(_ip));
+  const _uid = userIdFor(order);
+  if (_uid) p.set('uid', _uid);          // GA4 User-ID — additive; omit for guest orders with no customer record
+  p.set('cid', String(applyCid || syntheticClientId(orderId)));   // ALWAYS send cid (synthetic fallback) — an absent cid can make the stock client DROP the hit = capture regression on the no-session cohort
+  if (session.ga_session_id)     p.set('sid', String(session.ga_session_id));      // sid: omit if absent — NEVER fabricate (a fake sid would open a sourceless session)
+  if (session.ga_session_number) p.set('sct', String(session.ga_session_number));
+  // dl rescue: sourceless cohort only (no sid) — hand GA4 the order-attribute attribution via the page URL
+  if (!session.ga_session_id && process.env.GA4_DL_RESCUE === '1') {
+    const dl = rescueDl(order);
+    if (dl) p.set('dl', dl);
+  }
+  p.set('seg', '1');                                   // session engaged
+  p.set('en', 'purchase');
+  p.set('cu', order.currency || 'GBP');
+  p.set('ep.transaction_id', String(orderId));
+  p.set('epn.value', String(Number(order.subtotal_price) || 0));   // mirrors transform.js value basis
+  (items || []).forEach((it, i) => { const v = itemParam(it); if (v) p.set('pr' + (i + 1), v); });
+  return GA4_COLLECT_URL + '?' + p.toString();
+}
+
+// POST the hit. IP/UA override headers stop GA4 geo/device skewing to Railway's datacentre.
+export async function sendCollect(order, orderId, applyCid, session, items, opts = {}) {
+  const url = buildCollectUrl(order, orderId, applyCid, session, items);
+  const cd = order.client_details || {};
+  const headers = {};
+  // XFF removed 2026-08-21: probe-confirmed ignored by Stape; _uip in the URL (buildCollectUrl) carries the customer IP.
+  if (cd.user_agent) headers['User-Agent'] = cd.user_agent;
+  const r = await fetch(url, { method: 'POST', headers, signal: opts.signal });
+  if (!r.ok) throw new Error(`ga4 collect ${r.status}`);
+  return r;
+}
