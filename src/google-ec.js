@@ -186,6 +186,40 @@ export function buildRefundAdjustment(refund, orderValue, refundedBefore, { cust
   return { ...base, adjustmentType: 'RESTATEMENT', restatementValue: { adjustedValue: adjusted, currencyCode: currency }, _refunded: thisRefund };
 }
 
+// Classify a Google Ads partial-failure error into a retry class. Exported for tests.
+//   'transient'  - time alone fixes it, long runway. TOO_RECENT belongs here, NOT with not_found: Google returns
+//                  it when the conversion was recorded too recently to be adjusted, and it clears as the
+//                  conversion ages, so a short ceiling would abandon rows that were about to succeed.
+//   'not_found'  - no conversion exists for this conversion action + identifier. Worth a few attempts to cover
+//                  propagation; if the original conversion was never uploaded it will never appear.
+//   'permanent'  - anything else. Fails immediately, unchanged from previous behaviour.
+// TOO_RECENT is tested first so an error text mentioning both does not fall into the short bucket.
+// Selection of rows the sweeper will attempt. Exported so the terminal states ('abandoned', 'failed',
+// 'expired', 'done') can be tested for exclusion against the real statement rather than a restatement of it.
+export const EC_DUE_SQL = `SELECT order_id, payload, order_created_at, attempts FROM ec_queue WHERE status='pending' AND due_at <= ? ORDER BY due_at LIMIT ?`;
+
+// Decide what happens to a row whose adjustment just failed. Pure, so the ceiling arithmetic is testable.
+//   attemptsBefore - ec_queue.attempts as read BEFORE this pass. The attempt just made is attemptsBefore + 1,
+//                    which is what the ceiling is compared against: a ceiling of N stops work after the Nth
+//                    attempt has failed, so exactly N attempts are made in total.
+// Returns { action: 'retry' | 'abandon' | 'fail', kind, attemptsMade, ceiling, why }.
+export function ecRetryDecision({ errText, attemptsBefore, ageMs, maxAttempts, notFoundMaxAttempts, maxAgeMs }) {
+  const kind = classifyEcError(errText);
+  const attemptsMade = Number(attemptsBefore) + 1;
+  if (kind === 'permanent') return { action: 'fail', kind, attemptsMade, ceiling: null, why: 'permanent error' };
+  const ceiling = kind === 'not_found' ? Number(notFoundMaxAttempts) : Number(maxAttempts);
+  if (Number(ageMs) > Number(maxAgeMs)) return { action: 'abandon', kind, attemptsMade, ceiling, why: 'past age ceiling' };
+  if (attemptsMade >= ceiling) return { action: 'abandon', kind, attemptsMade, ceiling, why: `${kind} ceiling ${ceiling} attempts reached` };
+  return { action: 'retry', kind, attemptsMade, ceiling, why: null };
+}
+
+export function classifyEcError(errText) {
+  const t = String(errText == null ? '' : errText);
+  if (/TOO_RECENT|RESOURCE_EXHAUSTED|CONCURRENT|INTERNAL|TRANSIENT/i.test(t)) return 'transient';
+  if (/NOT_FOUND/i.test(t)) return 'not_found';
+  return 'permanent';
+}
+
 // --- uploader factory: owns the queue tables, OAuth token cache, sweeper and stats ---
 export function createEcUploader(db, env = process.env) {
   const {
@@ -195,6 +229,8 @@ export function createEcUploader(db, env = process.env) {
     EC_UPLOAD_DELAY_MINUTES = 90,           // let the channel's S2S conversion register before enhancing it
     EC_RETRY_MINUTES = 30,                  // partial-failure retry interval (order not yet matchable)
     EC_MAX_AGE_HOURS = 24,                  // Google's enhancement window — expire rows past it
+    EC_MAX_ATTEMPTS = 48,                   // ceiling for genuinely transient failures (48 x 30min ≈ the 24h window)
+    EC_NOT_FOUND_MAX_ATTEMPTS = 12,         // tighter ceiling for CONVERSION_NOT_FOUND — see classifyEcError below
     EC_BATCH_LIMIT = 200,                   // adjustments per upload request (API max 2000)
     EC_REFUNDS = 'off',                     // off | retract (full refunds -> RETRACTION only) | full (also partial -> RESTATEMENT)
     EC_REFUND_BASIS = 'subtotal',           // subtotal | total — which order value the Shopify Google channel reports as the conversion
@@ -218,12 +254,13 @@ export function createEcUploader(db, env = process.env) {
   const qInsert  = db.prepare(`INSERT OR IGNORE INTO ec_queue (order_id, payload, order_created_at, due_at, created_at, order_value, order_total) VALUES (?, ?, ?, ?, ?, ?, ?)`);
   const qOrder   = db.prepare(`SELECT order_value, order_total, refunded_total FROM ec_queue WHERE order_id = ?`);
   const qRefunded= db.prepare(`UPDATE ec_queue SET refunded_total = COALESCE(refunded_total, 0) + ? WHERE order_id = ?`);
-  const qDue     = db.prepare(`SELECT order_id, payload, order_created_at, attempts FROM ec_queue WHERE status='pending' AND due_at <= ? ORDER BY due_at LIMIT ?`);
+  const qDue     = db.prepare(EC_DUE_SQL);
   const qDone    = db.prepare(`UPDATE ec_queue SET status='done', uploaded_at=?, last_error=NULL WHERE order_id=?`);
   const qRetry   = db.prepare(`UPDATE ec_queue SET due_at=?, attempts=attempts+1, last_error=? WHERE order_id=?`);
   const qFail    = db.prepare(`UPDATE ec_queue SET status=?, last_error=? WHERE order_id=?`);
   const qStats   = db.prepare(`SELECT status, COUNT(*) n, MAX(uploaded_at) last_uploaded FROM ec_queue GROUP BY status`);
   const qLastErr = db.prepare(`SELECT order_id, status, attempts, last_error FROM ec_queue WHERE last_error IS NOT NULL ORDER BY COALESCE(uploaded_at, due_at) DESC LIMIT 5`);
+  const qAband   = db.prepare(`SELECT order_id, attempts, last_error FROM ec_queue WHERE status='abandoned' ORDER BY due_at DESC LIMIT 10`);
   const qPurge   = db.prepare(`DELETE FROM ec_queue WHERE status != 'pending' AND created_at < ?`);
 
   // OAuth access-token cache (refresh-token grant; Google Ads refresh tokens do not rotate)
@@ -375,11 +412,31 @@ export function createEcUploader(db, env = process.env) {
         ok++;
         return;
       }
-      // conversion not registered/matchable yet -> retry inside the window; anything else is permanent
-      const retryable = /NOT_FOUND|TOO_RECENT|RESOURCE_EXHAUSTED|CONCURRENT|INTERNAL|TRANSIENT/i.test(errText);
-      if (retryable) { qRetry.run(Date.now() + Number(EC_RETRY_MINUTES) * 60000, errText.slice(0, 300), row.order_id); retried++; }
-      else           { qFail.run('failed', errText.slice(0, 300), row.order_id); failed++; }
-      console.error('[ec] adjustment error', row.order_id, retryable ? '(will retry)' : '(permanent)', errText.slice(0, 300));
+      // Retry policy. 'transient' is a failure that time alone fixes, so it gets the long runway: TOO_RECENT is
+      // Google refusing to adjust a conversion it only just recorded, which clears once the conversion ages, so it
+      // must NOT share the short CONVERSION_NOT_FOUND ceiling. 'not_found' means no conversion exists for this
+      // action + identifier: if the original was never uploaded it never appears, so a handful of attempts covers
+      // propagation and anything beyond that is burnt API calls (2026-09-15: one refund retried ~37 times).
+      // Both ceilings sit UNDER the existing EC_MAX_AGE_HOURS expiry — that is Google's enhancement window and
+      // stays the outer bound; these only stop useless work sooner.
+      const d = ecRetryDecision({
+        errText,
+        attemptsBefore: row.attempts,
+        ageMs: Date.now() - row.order_created_at,
+        maxAttempts: EC_MAX_ATTEMPTS,
+        notFoundMaxAttempts: EC_NOT_FOUND_MAX_ATTEMPTS,
+        maxAgeMs: Number(EC_MAX_AGE_HOURS) * 3600000,
+      });
+      if (d.action === 'fail') {
+        qFail.run('failed', errText.slice(0, 300), row.order_id); failed++;
+        console.error('[ec] adjustment error', row.order_id, '(permanent)', errText.slice(0, 300));
+      } else if (d.action === 'abandon') {
+        qFail.run('abandoned', `[abandoned: ${d.why}] ${errText}`.slice(0, 300), row.order_id); failed++;
+        console.error('[ec] adjustment abandoned', row.order_id, `(${d.why}, attempts=${d.attemptsMade})`, errText.slice(0, 200));
+      } else {
+        qRetry.run(Date.now() + Number(EC_RETRY_MINUTES) * 60000, errText.slice(0, 300), row.order_id); retried++;
+        console.error('[ec] adjustment error', row.order_id, `(will retry, attempt ${d.attemptsMade}/${d.ceiling})`, errText.slice(0, 300));
+      }
     });
     console.log(`[ec] upload ${validateOnly ? 'VALIDATE' : 'LIVE'} batch=${live.length} ok=${ok} retry=${retried} failed=${failed} partial_failure=${pf ? 'YES' : 'none'}`);
     try { qPurge.run(Date.now() - 60 * 86400000); } catch {}   // 60d: order_value must outlive the refund window
@@ -391,6 +448,7 @@ export function createEcUploader(db, env = process.env) {
         mode: EC_MODE, refunds: EC_REFUNDS, refund_basis: EC_REFUND_BASIS, creds_present: credsOk,
         conversion_action: EC_CONVERSION_ACTION_ID, customer_id: EC_CUSTOMER_ID,
         by_status: qStats.all(),
+        abandoned: qAband.all(),          // terminal: ceiling or age reached — visible, never silently dropped
         recent_errors: qLastErr.all(),
       };
     } catch (e) { return { mode: EC_MODE, error: e.message }; }
