@@ -196,6 +196,11 @@ export function buildRefundAdjustment(refund, orderValue, refundedBefore, { cust
 // TOO_RECENT is tested first so an error text mentioning both does not fall into the short bucket.
 // Selection of rows the sweeper will attempt. Exported so the terminal states ('abandoned', 'failed',
 // 'expired', 'done') can be tested for exclusion against the real statement rather than a restatement of it.
+// Parks refund-adjustment rows that are still pending when EC_REFUNDS=off. Exported so the test exercises the
+// real statement: it must touch ONLY pending rows whose key is the refund: namespace, never enhancement rows and
+// never rows already in a terminal state.
+export const EC_PARK_REFUNDS_SQL = "UPDATE ec_queue SET status='refunds_disabled' WHERE status='pending' AND order_id LIKE 'refund:%'";
+
 export const EC_DUE_SQL = `SELECT order_id, payload, order_created_at, attempts FROM ec_queue WHERE status='pending' AND due_at <= ? ORDER BY due_at LIMIT ?`;
 
 // Decide what happens to a row whose adjustment just failed. Pure, so the ceiling arithmetic is testable.
@@ -260,8 +265,20 @@ export function createEcUploader(db, env = process.env) {
   const qFail    = db.prepare(`UPDATE ec_queue SET status=?, last_error=? WHERE order_id=?`);
   const qStats   = db.prepare(`SELECT status, COUNT(*) n, MAX(uploaded_at) last_uploaded FROM ec_queue GROUP BY status`);
   const qLastErr = db.prepare(`SELECT order_id, status, attempts, last_error FROM ec_queue WHERE last_error IS NOT NULL ORDER BY COALESCE(uploaded_at, due_at) DESC LIMIT 5`);
+  // 2026-09-16: EC_REFUNDS=off parks any refund-adjustment rows still pending so they stop retrying. Terminal
+  // status 'refunds_disabled' is distinct from 'abandoned'/'expired'/'failed' so the rows stay legible as
+  // "switched off", not "failed", and remain visible in /health/ec by_status. Reversible: flipping EC_REFUNDS
+  // back on does NOT revive them (deliberate — they would be stale); re-queue by hand if ever needed.
+  const qParkRefunds = db.prepare(EC_PARK_REFUNDS_SQL);
   const qAband   = db.prepare(`SELECT order_id, attempts, last_error FROM ec_queue WHERE status='abandoned' ORDER BY due_at DESC LIMIT 10`);
   const qPurge   = db.prepare(`DELETE FROM ec_queue WHERE status != 'pending' AND created_at < ?`);
+
+  if (EC_REFUNDS === 'off') {
+    try {
+      const parked = qParkRefunds.run().changes;
+      if (parked) console.log('[ec] EC_REFUNDS=off — parked ' + parked + ' pending refund-adjustment row(s) as refunds_disabled');
+    } catch (e) { console.error('[ec] parking pending refund rows failed', e.message); }
+  }
 
   // OAuth access-token cache (refresh-token grant; Google Ads refresh tokens do not rotate)
   let token = null, tokenExp = 0;
@@ -343,6 +360,12 @@ export function createEcUploader(db, env = process.env) {
     const maxAgeMs = Number(EC_MAX_AGE_HOURS) * 3600000;
     const live = [];
     for (const row of rows) {
+      // refund adjustments switched off: park rather than upload. Catches any row whose due_at came round
+      // between the flag flipping and the init-time parking pass.
+      if (EC_REFUNDS === 'off' && String(row.order_id).startsWith('refund:')) {
+        qFail.run('refunds_disabled', 'EC_REFUNDS=off', row.order_id);
+        continue;
+      }
       if (Date.now() - row.order_created_at > maxAgeMs) {
         qFail.run('expired', `past ${EC_MAX_AGE_HOURS}h enhancement window`, row.order_id);
         console.error('[ec] expired unuploaded', row.order_id);

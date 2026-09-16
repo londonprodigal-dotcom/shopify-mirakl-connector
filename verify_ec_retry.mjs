@@ -1,7 +1,7 @@
 // Google Enhanced Conversions retry policy — ceilings, terminal states and queue exclusion.
 // Added 2026-09-16 after a CONVERSION_NOT_FOUND refund adjustment retried ~37 times in 19h. It was bounded
 // (EC_MAX_AGE_HOURS would have expired it at 24h) but every one of those attempts was known-useless work.
-import { classifyEcError, ecRetryDecision, EC_DUE_SQL } from './src/google-ec.js';
+import { classifyEcError, ecRetryDecision, EC_DUE_SQL, EC_PARK_REFUNDS_SQL } from './src/google-ec.js';
 import { DatabaseSync } from 'node:sqlite';
 
 let pass = 0, fail = 0;
@@ -78,6 +78,35 @@ eq(ab.length, 1, 'abandoned row is retained, not deleted');
 ok(ab[0].last_error && ab[0].last_error.includes('CONVERSION_NOT_FOUND'), 'abandoned row preserves the original error for diagnostics');
 ok(ab[0].last_error.startsWith('[abandoned:'), 'abandoned row records why it was abandoned');
 eq(ab[0].attempts, 12, 'abandoned row preserves its attempt count');
+
+
+console.log('\n--- EC_REFUNDS=off: parking pending refund rows (real EC_PARK_REFUNDS_SQL) ---');
+const db2 = new DatabaseSync(':memory:');
+db2.exec(`CREATE TABLE ec_queue (order_id TEXT PRIMARY KEY, payload TEXT, order_created_at INTEGER, due_at INTEGER,
+  attempts INTEGER DEFAULT 0, status TEXT DEFAULT 'pending', last_error TEXT, uploaded_at INTEGER, created_at INTEGER)`);
+const ins2 = db2.prepare(`INSERT INTO ec_queue (order_id, payload, order_created_at, due_at, attempts, status, last_error) VALUES (?,?,?,?,?,?,?)`);
+const now2 = Date.now();
+ins2.run('refund:111', '{}', now2, now2-1000, 3,  'pending',   'CONVERSION_NOT_FOUND');
+ins2.run('refund:222', '{}', now2, now2-1000, 9,  'pending',   null);
+ins2.run('refund:333', '{}', now2, now2-1000, 12, 'abandoned', '[abandoned: not_found ceiling 12 attempts reached]');
+ins2.run('refund:444', '{}', now2, now2-1000, 41, 'expired',   'past 24h enhancement window');
+ins2.run('17266778177923', '{}', now2, now2-1000, 0, 'pending', null);
+ins2.run('17264840900995', '{}', now2, now2-1000, 1, 'done',    null);
+const parked = db2.prepare(EC_PARK_REFUNDS_SQL).run().changes;
+eq(parked, 2, 'parks exactly the two PENDING refund rows');
+const st = (id) => db2.prepare('SELECT status FROM ec_queue WHERE order_id=?').get(id).status;
+eq(st('refund:111'), 'refunds_disabled', 'pending refund row is parked');
+eq(st('refund:222'), 'refunds_disabled', 'second pending refund row is parked');
+eq(st('refund:333'), 'abandoned', 'already-abandoned refund row untouched (history preserved)');
+eq(st('refund:444'), 'expired', 'already-expired refund row untouched');
+eq(st('17266778177923'), 'pending', 'PENDING ENHANCEMENT row NOT parked - purchase EC path unaffected');
+eq(st('17264840900995'), 'done', 'completed enhancement row untouched');
+const due2 = db2.prepare(EC_DUE_SQL).all(now2, 200).map(r => r.order_id);
+eq(due2.length, 1, 'only one row remains due after parking');
+eq(due2[0], '17266778177923', 'the remaining due row is the enhancement row, not a refund');
+ok(!due2.some(x => String(x).startsWith('refund:')), 'no refund row is selected for upload once parked');
+const perr = db2.prepare("SELECT last_error FROM ec_queue WHERE order_id='refund:111'").get().last_error;
+ok(perr && perr.includes('CONVERSION_NOT_FOUND'), 'parked row keeps its last_error for diagnostics');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
