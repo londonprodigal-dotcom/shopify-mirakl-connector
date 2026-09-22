@@ -55,6 +55,7 @@ query($cursor: String, $q: String) {
     nodes {
       id name legacyResourceId createdAt updatedAt test
       displayFinancialStatus
+      customAttributes { key value }
       currentTotalPriceSet { shopMoney { amount currencyCode } }
       customer {
         email phone firstName lastName
@@ -114,6 +115,38 @@ def fetch_purchaser_emails(min_orders=1, max_pages=400):
             break
         cursor = block["pageInfo"]["endCursor"]
     return emails
+
+
+CLICK_ID_KEYS = {
+    "gclid": ("gclid", "_gclid", "google_gclid"),
+    "fbclid": ("fbclid", "_fbclid"),
+    "fbc": ("fbc", "_fbc"),
+    "msclkid": ("msclkid", "_msclkid"),
+}
+
+
+def extract_click_ids(order):
+    """Click identifiers from an order's custom (note) attributes.
+
+    The storefront writes these onto the order as note attributes, which is
+    where fact_order_touch already sources them from (cid_source='note').
+    Keys are matched case-insensitively and blank values are dropped.
+    """
+    attrs = {}
+    for a in (order.get("customAttributes") or []):
+        key = (a.get("key") or "").strip().lower().lstrip("_")
+        val = (a.get("value") or "").strip()
+        if key and val:
+            attrs.setdefault(key, val)
+
+    out = {}
+    for canonical, aliases in CLICK_ID_KEYS.items():
+        for alias in aliases:
+            probe = alias.lstrip("_")
+            if attrs.get(probe):
+                out[canonical] = attrs[probe]
+                break
+    return out
 
 
 def sha256_norm(value):

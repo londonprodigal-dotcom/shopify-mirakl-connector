@@ -81,6 +81,71 @@ def upload_refund_adjustment(conversion_action, order_id, refund_iso,
     return True, "ok"
 
 
+# ── gclid → campaign ─────────────────────────────────────────────────────────
+
+def resolve_gclids(pending, lookback_days=2):
+    """Map gclids to their campaign via the click_view report.
+
+    click_view has two hard constraints: exactly one day per query, and a
+    90-day lookback. Clicks usually land on or just before the order date, so
+    each order date is expanded to itself plus `lookback_days` before it, the
+    set of dates is deduped, and each is queried once.
+
+    `pending` is a list of {gclid, order_id, order_date}. Returns a dict of
+    gclid -> {campaign_id, campaign_name, ad_group_id, ad_group_name,
+    click_date}, containing only the gclids actually found.
+    """
+    from datetime import date, timedelta
+
+    wanted = {p["gclid"] for p in pending if p.get("gclid")}
+    if not wanted:
+        return {}
+
+    dates = set()
+    today = datetime.now(timezone.utc).date()
+    horizon = today - timedelta(days=89)
+    for p in pending:
+        raw = (p.get("order_date") or "")[:10]
+        try:
+            d = date.fromisoformat(raw)
+        except ValueError:
+            continue
+        for back in range(lookback_days + 1):
+            day = d - timedelta(days=back)
+            if horizon <= day <= today:
+                dates.add(day)
+
+    if not dates:
+        return {}
+
+    client = _client()
+    svc = client.get_service("GoogleAdsService")
+    found = {}
+    for day in sorted(dates, reverse=True):
+        query = f"""
+            SELECT click_view.gclid, campaign.id, campaign.name,
+                   ad_group.id, ad_group.name, segments.date
+            FROM click_view
+            WHERE segments.date = '{day.isoformat()}'
+        """
+        try:
+            for row in svc.search(customer_id=_customer_id(), query=query):
+                gclid = row.click_view.gclid
+                if gclid and gclid in wanted and gclid not in found:
+                    found[gclid] = {
+                        "campaign_id": str(row.campaign.id),
+                        "campaign_name": row.campaign.name,
+                        "ad_group_id": str(row.ad_group.id),
+                        "ad_group_name": row.ad_group.name,
+                        "click_date": row.segments.date,
+                    }
+        except Exception as e:  # one bad day must not sink the whole cycle
+            raise RuntimeError(f"click_view {day.isoformat()} failed: {e}") from e
+        if len(found) == len(wanted):
+            break
+    return found
+
+
 # ── Customer Match ───────────────────────────────────────────────────────────
 
 def ensure_customer_match_list(name, state_get, state_set):

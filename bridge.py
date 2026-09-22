@@ -25,6 +25,7 @@ import requests
 import gads_client
 import meta_client
 import shopify_client
+import stape_client
 import state
 
 LOG_RING = []
@@ -79,6 +80,16 @@ def _process_order(order, dry, counts):
     currency = order["currentTotalPriceSet"]["shopMoney"]["currencyCode"]
     value = float(order["currentTotalPriceSet"]["shopMoney"]["amount"])
     user_data = meta_client.build_user_data(order, shopify_client.sha256_norm)
+
+    # Record any gclid for later campaign resolution. Local insert only — no
+    # outbound call — so it runs unconditionally, which means history is
+    # already there whenever ENABLE_GCLID_RESOLVE is switched on.
+    try:
+        gclid = shopify_client.extract_click_ids(order).get("gclid")
+        if gclid:
+            state.gclid_add_pending(gclid, oid, order.get("createdAt"))
+    except Exception as e:
+        log(f"gclid capture failed for {order.get('name')}: {e}")
 
     if not user_data.get("em"):
         counts["skipped"] += 1
@@ -144,6 +155,100 @@ def _process_order(order, dry, counts):
                 if not ok:
                     log(f"refund-adj partial failure {order['name']}: {msg}")
             counts["refund_adj"] += 1
+
+
+# ── Stape log mirror ─────────────────────────────────────────────────────────
+
+def log_cycle(backfill_days=None):
+    """Copy Stape outgoing logs into local state before they age out.
+
+    Stape keeps 10 days on the Business plan, so this only has to run often
+    enough to stay inside that. Nothing leaves the estate — it is a read from
+    Stape and a write to our own SQLite — so it is not gated on DRY_RUN, only
+    on ENABLE_STAPE_LOGS.
+
+    backfill_days pulls a wider window on demand (capped at the retention
+    limit); the scheduled path uses the watermark with a 30-minute overlap.
+    """
+    if not flag("ENABLE_STAPE_LOGS"):
+        return {"skipped": "ENABLE_STAPE_LOGS off"}
+
+    now = datetime.now(timezone.utc)
+    retention = int(os.environ.get("STAPE_LOG_RETENTION_DAYS", "10"))
+    if backfill_days:
+        start = now - timedelta(days=min(int(backfill_days), retention))
+    else:
+        wm = state.get("stape_log_watermark")
+        if wm:
+            start = datetime.fromtimestamp(float(wm), tz=timezone.utc) - timedelta(minutes=30)
+        else:
+            start = now - timedelta(days=1)
+        floor = now - timedelta(days=retention)
+        if start < floor:
+            log(f"log_cycle: watermark older than {retention}d retention, clamping")
+            start = floor
+
+    platform = os.environ.get("STAPE_LOG_PLATFORM", "Facebook")
+    try:
+        records, partial = stape_client.collect(
+            start.timestamp(), now.timestamp(), platform=platform)
+    except Exception as e:
+        log(f"log_cycle: fetch failed: {e}")
+        return {"error": str(e)[:300]}
+
+    inserted = state.stape_insert(records)
+    # Only advance on a complete read; a truncated page would skip rows.
+    if not partial:
+        state.set_("stape_log_watermark", now.timestamp())
+    state.set_("last_log_cycle", now.isoformat())
+
+    result = {"window_start": start.isoformat(), "window_end": now.isoformat(),
+              "fetched": len(records), "new": inserted, "partial": bool(partial)}
+    if partial:
+        log("log_cycle: partial response — watermark held, next run re-reads")
+    state.set_("last_log_cycle_counts", str(result))
+    log(f"log_cycle done: {result}")
+    return result
+
+
+def gclid_cycle():
+    """Resolve captured gclids to campaigns via the Google Ads click_view report.
+
+    Read-only against Google Ads, so like log_cycle it is gated on its own flag
+    rather than DRY_RUN. Unresolved gclids get an attempt counter so a click
+    that never appears (wrong account, outside the 90-day window) stops being
+    retried instead of burning quota forever.
+    """
+    if not flag("ENABLE_GCLID_RESOLVE"):
+        return {"skipped": "ENABLE_GCLID_RESOLVE off"}
+
+    pending = state.gclid_pending(
+        max_attempts=int(os.environ.get("GCLID_MAX_ATTEMPTS", "4")),
+        limit=int(os.environ.get("GCLID_BATCH", "200")))
+    if not pending:
+        state.set_("last_gclid_cycle", datetime.now(timezone.utc).isoformat())
+        return {"pending": 0, "resolved": 0}
+
+    try:
+        found = gads_client.resolve_gclids(pending)
+    except Exception as e:
+        log(f"gclid_cycle: resolve failed: {e}")
+        state.gclid_bump_attempts([p["gclid"] for p in pending])
+        return {"error": str(e)[:300], "pending": len(pending)}
+
+    for gclid, info in found.items():
+        state.gclid_resolve(gclid, info["campaign_id"], info["campaign_name"],
+                            info.get("ad_group_id"), info.get("ad_group_name"),
+                            info.get("click_date"))
+    missed = [p["gclid"] for p in pending if p["gclid"] not in found]
+    state.gclid_bump_attempts(missed)
+
+    result = {"pending": len(pending), "resolved": len(found),
+              "unresolved": len(missed)}
+    state.set_("last_gclid_cycle", datetime.now(timezone.utc).isoformat())
+    state.set_("last_gclid_counts", str(result))
+    log(f"gclid_cycle done: {result}")
+    return result
 
 
 # ── Audiences ────────────────────────────────────────────────────────────────

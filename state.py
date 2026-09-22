@@ -27,6 +27,36 @@ def init():
         c.execute("""CREATE TABLE IF NOT EXISTS audience_members (
             audience TEXT, em_sha256 TEXT, added_at REAL,
             PRIMARY KEY (audience, em_sha256))""")
+        # Stape outgoing-log mirror. seq is the incremental cursor the warehouse
+        # pulls against; log_id is Stape's own row id and carries the dedupe.
+        c.execute("""CREATE TABLE IF NOT EXISTS stape_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            log_id TEXT UNIQUE,
+            logged_at INTEGER, event_time INTEGER,
+            platform TEXT, status TEXT, event_name TEXT, event_id TEXT,
+            order_id TEXT, value REAL, currency TEXT,
+            content_ids TEXT, event_source_url TEXT,
+            fbc TEXT, fbp TEXT, em_sha256 TEXT, external_ids TEXT,
+            client_ip TEXT, client_ua TEXT,
+            inserted_at REAL)""")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_stape_ev_time "
+                  "ON stape_events (event_time)")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_stape_ev_name "
+                  "ON stape_events (event_name)")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_stape_ev_em "
+                  "ON stape_events (em_sha256)")
+        # gclid -> campaign, resolved from the Google Ads click_view report.
+        c.execute("""CREATE TABLE IF NOT EXISTS gclid_campaigns (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            gclid TEXT UNIQUE,
+            order_id TEXT, order_date TEXT,
+            campaign_id TEXT, campaign_name TEXT,
+            ad_group_id TEXT, ad_group_name TEXT,
+            click_date TEXT, resolved INTEGER DEFAULT 0,
+            attempts INTEGER DEFAULT 0,
+            first_seen REAL, resolved_at REAL)""")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_gclid_resolved "
+                  "ON gclid_campaigns (resolved, attempts)")
 
 
 def get(k, default=None):
@@ -82,3 +112,115 @@ def stats():
         dry = c.execute("SELECT COUNT(*) FROM sent_events WHERE dry_run=1").fetchone()[0]
         aud = c.execute("SELECT audience, COUNT(*) FROM audience_members GROUP BY audience").fetchall()
     return {"sent_live": sent, "sent_dry": dry, "audiences": dict(aud)}
+
+
+# ── Stape event mirror ───────────────────────────────────────────────────────
+
+_STAPE_COLS = ("log_id", "logged_at", "event_time", "platform", "status",
+               "event_name", "event_id", "order_id", "value", "currency",
+               "content_ids", "event_source_url", "fbc", "fbp", "em_sha256",
+               "external_ids", "client_ip", "client_ua")
+
+
+def stape_insert(records):
+    """INSERT OR IGNORE on log_id. Returns the number of genuinely new rows."""
+    if not records:
+        return 0
+    now = time.time()
+    rows = [tuple(r.get(col) for col in _STAPE_COLS) + (now,) for r in records]
+    placeholders = ",".join("?" * (len(_STAPE_COLS) + 1))
+    with _lock, _conn() as c:
+        before = c.execute("SELECT COUNT(*) FROM stape_events").fetchone()[0]
+        c.executemany(
+            f"INSERT OR IGNORE INTO stape_events "
+            f"({','.join(_STAPE_COLS)}, inserted_at) VALUES ({placeholders})",
+            rows)
+        after = c.execute("SELECT COUNT(*) FROM stape_events").fetchone()[0]
+    return after - before
+
+
+def stape_export(after_seq=0, limit=5000):
+    """Rows above a cursor, oldest first — the warehouse's incremental pull."""
+    cols = ("seq",) + _STAPE_COLS
+    with _lock, _conn() as c:
+        rows = c.execute(
+            f"SELECT {','.join(cols)} FROM stape_events "
+            f"WHERE seq > ? ORDER BY seq LIMIT ?",
+            (int(after_seq), int(limit))).fetchall()
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def stape_stats():
+    with _lock, _conn() as c:
+        total = c.execute("SELECT COUNT(*) FROM stape_events").fetchone()[0]
+        max_seq = c.execute("SELECT COALESCE(MAX(seq),0) FROM stape_events").fetchone()[0]
+        by_event = c.execute(
+            "SELECT event_name, COUNT(*) FROM stape_events "
+            "GROUP BY event_name ORDER BY 2 DESC").fetchall()
+        span = c.execute("SELECT MIN(event_time), MAX(event_time) "
+                         "FROM stape_events").fetchone()
+    return {"rows": total, "max_seq": max_seq, "by_event": dict(by_event),
+            "event_time_min": span[0], "event_time_max": span[1]}
+
+
+# ── gclid → campaign ─────────────────────────────────────────────────────────
+
+def gclid_add_pending(gclid, order_id, order_date):
+    """Record a gclid awaiting resolution. No-op if already known."""
+    if not gclid:
+        return
+    with _lock, _conn() as c:
+        c.execute("INSERT OR IGNORE INTO gclid_campaigns "
+                  "(gclid, order_id, order_date, first_seen) VALUES (?,?,?,?)",
+                  (gclid, str(order_id), order_date, time.time()))
+
+
+def gclid_pending(max_attempts=4, limit=200):
+    """Unresolved gclids that have not exhausted their retries."""
+    with _lock, _conn() as c:
+        rows = c.execute(
+            "SELECT gclid, order_id, order_date FROM gclid_campaigns "
+            "WHERE resolved=0 AND attempts < ? ORDER BY first_seen LIMIT ?",
+            (int(max_attempts), int(limit))).fetchall()
+    return [{"gclid": r[0], "order_id": r[1], "order_date": r[2]} for r in rows]
+
+
+def gclid_resolve(gclid, campaign_id, campaign_name, ad_group_id=None,
+                  ad_group_name=None, click_date=None):
+    with _lock, _conn() as c:
+        c.execute("UPDATE gclid_campaigns SET campaign_id=?, campaign_name=?, "
+                  "ad_group_id=?, ad_group_name=?, click_date=?, resolved=1, "
+                  "resolved_at=? WHERE gclid=?",
+                  (str(campaign_id), campaign_name, ad_group_id, ad_group_name,
+                   click_date, time.time(), gclid))
+
+
+def gclid_bump_attempts(gclids):
+    if not gclids:
+        return
+    with _lock, _conn() as c:
+        c.executemany("UPDATE gclid_campaigns SET attempts = attempts + 1 "
+                      "WHERE gclid=?", [(g,) for g in gclids])
+
+
+def gclid_export(after_seq=0, limit=5000):
+    cols = ("seq", "gclid", "order_id", "order_date", "campaign_id",
+            "campaign_name", "ad_group_id", "ad_group_name", "click_date",
+            "resolved")
+    with _lock, _conn() as c:
+        rows = c.execute(
+            f"SELECT {','.join(cols)} FROM gclid_campaigns "
+            f"WHERE seq > ? AND resolved=1 ORDER BY seq LIMIT ?",
+            (int(after_seq), int(limit))).fetchall()
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def gclid_stats():
+    with _lock, _conn() as c:
+        total = c.execute("SELECT COUNT(*) FROM gclid_campaigns").fetchone()[0]
+        done = c.execute("SELECT COUNT(*) FROM gclid_campaigns "
+                         "WHERE resolved=1").fetchone()[0]
+        max_seq = c.execute("SELECT COALESCE(MAX(seq),0) FROM gclid_campaigns "
+                            "WHERE resolved=1").fetchone()[0]
+    return {"gclids": total, "resolved": done, "pending": total - done,
+            "max_seq": max_seq}

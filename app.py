@@ -12,6 +12,9 @@ import state
 app = FastAPI(title="attribution-bridge")
 CYCLE_MINUTES = int(os.environ.get("CYCLE_MINUTES", "15"))
 AUDIENCE_HOUR_UTC = int(os.environ.get("AUDIENCE_HOUR_UTC", "3"))
+# Stape keeps 10 days, so 3-hourly leaves a very large safety margin.
+LOG_CYCLE_MINUTES = int(os.environ.get("LOG_CYCLE_MINUTES", "180"))
+GCLID_CYCLE_MINUTES = int(os.environ.get("GCLID_CYCLE_MINUTES", "360"))
 
 
 def _check_key(x_api_key):
@@ -39,7 +42,13 @@ def status():
         "last_cycle_counts": state.get("last_cycle_counts"),
         "last_audience_cycle": state.get("last_audience_cycle"),
         "last_audience_results": state.get("last_audience_results"),
+        "last_log_cycle": state.get("last_log_cycle"),
+        "last_log_cycle_counts": state.get("last_log_cycle_counts"),
+        "last_gclid_cycle": state.get("last_gclid_cycle"),
+        "last_gclid_counts": state.get("last_gclid_counts"),
         "ledger": state.stats(),
+        "stape_events": state.stape_stats(),
+        "gclids": state.gclid_stats(),
         "log_tail": bridge.LOG_RING[-40:],
     }
 
@@ -59,8 +68,45 @@ def run_audiences(x_api_key: str = Header(default="")):
     return {"started": True, "note": "running in background; poll /status"}
 
 
+@app.post("/run-log-cycle")
+def run_log_cycle(backfill_days: int = 0, x_api_key: str = Header(default="")):
+    """Pull Stape outgoing logs into local state. backfill_days widens the
+    window on demand, capped at Stape's retention limit."""
+    _check_key(x_api_key)
+    return bridge.log_cycle(backfill_days=backfill_days or None)
+
+
+@app.post("/run-gclid-cycle")
+def run_gclid_cycle(x_api_key: str = Header(default="")):
+    _check_key(x_api_key)
+    return bridge.gclid_cycle()
+
+
+@app.get("/export/stape-events")
+def export_stape_events(after_seq: int = 0, limit: int = 5000,
+                        x_api_key: str = Header(default="")):
+    """Incremental pull for the warehouse. Page with the returned max_seq."""
+    _check_key(x_api_key)
+    rows = state.stape_export(after_seq=after_seq, limit=min(limit, 20000))
+    return {"rows": rows, "count": len(rows),
+            "max_seq": rows[-1]["seq"] if rows else after_seq,
+            "has_more": len(rows) == min(limit, 20000)}
+
+
+@app.get("/export/gclid-campaigns")
+def export_gclid_campaigns(after_seq: int = 0, limit: int = 5000,
+                           x_api_key: str = Header(default="")):
+    _check_key(x_api_key)
+    rows = state.gclid_export(after_seq=after_seq, limit=min(limit, 20000))
+    return {"rows": rows, "count": len(rows),
+            "max_seq": rows[-1]["seq"] if rows else after_seq,
+            "has_more": len(rows) == min(limit, 20000)}
+
+
 def _loop():
     last_audience_day = None
+    last_log = 0.0
+    last_gclid = 0.0
     while True:
         try:
             bridge.order_cycle()
@@ -73,6 +119,18 @@ def _loop():
                 last_audience_day = now.date()
             except Exception as e:
                 bridge.log(f"LOOP audience error: {e}")
+        if time.time() - last_log >= LOG_CYCLE_MINUTES * 60:
+            try:
+                bridge.log_cycle()
+            except Exception as e:
+                bridge.log(f"LOOP log cycle error: {e}")
+            last_log = time.time()
+        if time.time() - last_gclid >= GCLID_CYCLE_MINUTES * 60:
+            try:
+                bridge.gclid_cycle()
+            except Exception as e:
+                bridge.log(f"LOOP gclid cycle error: {e}")
+            last_gclid = time.time()
         time.sleep(CYCLE_MINUTES * 60)
 
 

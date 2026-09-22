@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py bridge.py state.py shopify_client.py meta_client.py gads_client.py ./
+COPY app.py bridge.py state.py shopify_client.py meta_client.py gads_client.py stape_client.py ./
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=utf-8
