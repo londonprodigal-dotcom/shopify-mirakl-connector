@@ -286,9 +286,17 @@ def _klaviyo_subscribed_emails(max_pages=3000):
         log(f"  klaviyo list selected: {list_id}")
 
     emails = []
-    # request subscriptions so we can drop anyone not currently opted in to email
-    # marketing — list membership alone includes unsubscribed/suppressed profiles,
-    # which must never be pushed to ad platforms (GDPR).
+    # Request subscriptions so anyone who actively opted OUT can be dropped.
+    #
+    # We exclude UNSUBSCRIBED only, not "anything that isn't SUBSCRIBED". Most of
+    # this list reads NEVER_SUBSCRIBED (~94% on sampling), which does not mean
+    # those people declined — it means Klaviyo holds no Klaviyo-side opt-in event
+    # for them because they consented on the previous marketing platform and that
+    # history did not migrate into this field. Filtering on SUBSCRIBED discarded
+    # the entire pre-Klaviyo base.
+    #
+    # UNSUBSCRIBED is the line that matters: those people opted out and must never
+    # be pushed to an ad platform.
     url = (f"https://a.klaviyo.com/api/lists/{list_id}/profiles/?page[size]=100"
            "&additional-fields[profile]=subscriptions")
     pages = 0
@@ -303,7 +311,7 @@ def _klaviyo_subscribed_emails(max_pages=3000):
                 continue
             marketing = (((attrs.get("subscriptions") or {}).get("email") or {})
                          .get("marketing") or {})
-            if marketing.get("consent") == "SUBSCRIBED":
+            if marketing.get("consent") != "UNSUBSCRIBED":
                 emails.append(em)
         url = (body.get("links") or {}).get("next")
         if not url:

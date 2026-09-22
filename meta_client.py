@@ -65,7 +65,13 @@ def purchase_event(order, user_data, value, currency, event_name="Purchase",
     return {
         "event_name": event_name,
         "event_time": event_time,
-        "event_id": event_id or f"shopify_order_{order['legacyResourceId']}",
+        # Bare order id, matching what Stape's server-side Purchase already sends
+        # (verified: event_id == order_id on 30 of 30 live events). Meta dedupes
+        # on event_id, so the old "shopify_order_<id>" form would NOT have matched
+        # and every purchase would have been counted twice if this were switched
+        # on. A guard only — ENABLE_META_PURCHASE stays off, because Stape fires
+        # at checkout with fbc/fbp attached and this fires later with neither.
+        "event_id": event_id or str(order["legacyResourceId"]),
         "action_source": "website",
         "event_source_url": SITE_URL,
         "user_data": user_data,
