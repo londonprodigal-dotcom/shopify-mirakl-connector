@@ -117,36 +117,40 @@ def fetch_purchaser_emails(min_orders=1, max_pages=400):
     return emails
 
 
-CLICK_ID_KEYS = {
-    "gclid": ("gclid", "_gclid", "google_gclid"),
-    "fbclid": ("fbclid", "_fbclid"),
-    "fbc": ("fbc", "_fbc"),
-    "msclkid": ("msclkid", "_msclkid"),
-}
+# Click identifiers we care about, by canonical name. The storefront writes
+# these with an "attribution_" prefix (attribution_gclid, attribution_fbp, ...),
+# which is what fact_order_touch reads as cid_source='note'. Prefixes are
+# stripped before matching so bare keys work too.
+CLICK_ID_KEYS = ("gclid", "gbraid", "wbraid", "fbclid", "fbc", "fbp", "msclkid")
+_KEY_PREFIXES = ("attribution_", "_")
+
+
+def _normalise_key(key):
+    k = (key or "").strip().lower()
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _KEY_PREFIXES:
+            if k.startswith(prefix):
+                k = k[len(prefix):]
+                changed = True
+    return k
 
 
 def extract_click_ids(order):
     """Click identifiers from an order's custom (note) attributes.
 
-    The storefront writes these onto the order as note attributes, which is
-    where fact_order_touch already sources them from (cid_source='note').
-    Keys are matched case-insensitively and blank values are dropped.
+    Real orders carry these as attribution_gclid / attribution_gbraid /
+    attribution_fbp. gbraid and wbraid matter because Google sends those
+    instead of gclid on iOS when gclid is unavailable.
     """
     attrs = {}
     for a in (order.get("customAttributes") or []):
-        key = (a.get("key") or "").strip().lower().lstrip("_")
+        key = _normalise_key(a.get("key"))
         val = (a.get("value") or "").strip()
         if key and val:
             attrs.setdefault(key, val)
-
-    out = {}
-    for canonical, aliases in CLICK_ID_KEYS.items():
-        for alias in aliases:
-            probe = alias.lstrip("_")
-            if attrs.get(probe):
-                out[canonical] = attrs[probe]
-                break
-    return out
+    return {k: attrs[k] for k in CLICK_ID_KEYS if attrs.get(k)}
 
 
 def sha256_norm(value):
