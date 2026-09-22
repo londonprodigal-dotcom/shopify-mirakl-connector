@@ -106,8 +106,6 @@ def export_gclid_campaigns(after_seq: int = 0, limit: int = 5000,
 
 def _loop():
     last_audience_day = None
-    last_log = 0.0
-    last_gclid = 0.0
     while True:
         try:
             bridge.order_cycle()
@@ -151,3 +149,4 @@ def _aux_loop():
 
 state.init()
 threading.Thread(target=_loop, daemon=True).start()
+threading.Thread(target=_aux_loop, daemon=True).start()
