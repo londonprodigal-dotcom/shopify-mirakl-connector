@@ -36,9 +36,15 @@ def init():
             platform TEXT, status TEXT, event_name TEXT, event_id TEXT,
             order_id TEXT, value REAL, currency TEXT,
             content_ids TEXT, event_source_url TEXT,
-            fbc TEXT, fbp TEXT, em_sha256 TEXT, external_ids TEXT,
+            fbc TEXT, fbp TEXT, em_sha256 TEXT, ph_sha256 TEXT,
+            external_ids TEXT,
             client_ip TEXT, client_ua TEXT,
             inserted_at REAL)""")
+        # Added after the table shipped, so existing deployments need the column
+        # bolted on. SQLite has no IF NOT EXISTS for ADD COLUMN.
+        cols = {r[1] for r in c.execute("PRAGMA table_info(stape_events)")}
+        if "ph_sha256" not in cols:
+            c.execute("ALTER TABLE stape_events ADD COLUMN ph_sha256 TEXT")
         c.execute("CREATE INDEX IF NOT EXISTS ix_stape_ev_time "
                   "ON stape_events (event_time)")
         c.execute("CREATE INDEX IF NOT EXISTS ix_stape_ev_name "
@@ -119,7 +125,7 @@ def stats():
 _STAPE_COLS = ("log_id", "logged_at", "event_time", "platform", "status",
                "event_name", "event_id", "order_id", "value", "currency",
                "content_ids", "event_source_url", "fbc", "fbp", "em_sha256",
-               "external_ids", "client_ip", "client_ua")
+               "ph_sha256", "external_ids", "client_ip", "client_ua")
 
 
 def stape_insert(records):

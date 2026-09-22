@@ -123,6 +123,10 @@ def parse_item(item):
         "fbc": user.get("fbc") or "",
         "fbp": user.get("fbp") or "",
         "em_sha256": _one(user.get("em")) or "",
+        # Phone rides the same path as email (theme writes joy_ph_sha256, GTM
+        # tag 113 reads it at event time). Mirrored so phone match coverage can
+        # be measured the same way as email.
+        "ph_sha256": _one(user.get("ph")) or "",
         "external_ids": json.dumps(ext) if ext else "",
         "client_ip": user.get("client_ip_address") or "",
         "client_ua": (user.get("client_user_agent") or "")[:400],
