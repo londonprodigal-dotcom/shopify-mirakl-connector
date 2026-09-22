@@ -120,19 +120,33 @@ def _loop():
                 last_audience_day = now.date()
             except Exception as e:
                 bridge.log(f"LOOP audience error: {e}")
+        time.sleep(CYCLE_MINUTES * 60)
+
+
+def _aux_loop():
+    """Stape log mirror + gclid resolution, on their own thread.
+
+    Deliberately not in _loop: the audience cycle re-runs on every restart
+    after AUDIENCE_HOUR_UTC and pages through ~110k Klaviyo profiles, which
+    blocked these two for the best part of ten minutes each deploy. They are
+    independent of the order cycle, so they get their own timer.
+    """
+    last_log = 0.0
+    last_gclid = 0.0
+    while True:
         if time.time() - last_log >= LOG_CYCLE_MINUTES * 60:
             try:
                 bridge.log_cycle()
             except Exception as e:
-                bridge.log(f"LOOP log cycle error: {e}")
+                bridge.log(f"AUX log cycle error: {e}")
             last_log = time.time()
         if time.time() - last_gclid >= GCLID_CYCLE_MINUTES * 60:
             try:
                 bridge.gclid_cycle()
             except Exception as e:
-                bridge.log(f"LOOP gclid cycle error: {e}")
+                bridge.log(f"AUX gclid cycle error: {e}")
             last_gclid = time.time()
-        time.sleep(CYCLE_MINUTES * 60)
+        time.sleep(60)
 
 
 state.init()
