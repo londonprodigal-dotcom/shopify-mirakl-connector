@@ -36,7 +36,8 @@ def status():
         "dry_run": bridge.dry_run(),
         "flags": {k: bridge.flag(k) for k in (
             "ENABLE_META_PURCHASE", "ENABLE_PROFIT_EVENT",
-            "ENABLE_GOOGLE_ADJ", "ENABLE_META_AUDIENCES", "ENABLE_GOOGLE_CM")},
+            "ENABLE_GOOGLE_ADJ", "ENABLE_META_AUDIENCES", "ENABLE_GOOGLE_CM",
+            "ENABLE_STAPE_LOGS", "ENABLE_GCLID_RESOLVE")},
         "watermark": state.get("orders_watermark"),
         "last_cycle": state.get("last_cycle"),
         "last_cycle_counts": state.get("last_cycle_counts"),
