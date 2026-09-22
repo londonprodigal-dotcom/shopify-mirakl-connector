@@ -11,9 +11,18 @@ def _client():
         "client_id": os.environ["GOOGLE_ADS_OAUTH_CLIENT_ID"],
         "client_secret": os.environ["GOOGLE_ADS_OAUTH_CLIENT_SECRET"],
         "refresh_token": os.environ["GOOGLE_ADS_OAUTH_REFRESH_TOKEN"],
-        "login_customer_id": os.environ["GOOGLE_ADS_LOGIN_CUSTOMER_ID"].replace("-", ""),
         "use_proto_plus": True,
     }
+    # login-customer-id is NOT sent by default. The google-ads.yaml that works
+    # everywhere else in the estate omits it, and forcing one in is what produced
+    # USER_PERMISSION_DENIED here: the token authenticates directly against the
+    # customer, so naming a manager it cannot see fails. Opt back in with
+    # GOOGLE_ADS_USE_LOGIN_CUSTOMER_ID=true if a manager account is ever needed.
+    use_login = (os.environ.get("GOOGLE_ADS_USE_LOGIN_CUSTOMER_ID", "")
+                 .strip().lower() in ("1", "true", "yes"))
+    login = (os.environ.get("GOOGLE_ADS_LOGIN_CUSTOMER_ID") or "").replace("-", "").strip()
+    if use_login and login and login != _customer_id():
+        cfg["login_customer_id"] = login
     return GoogleAdsClient.load_from_dict(cfg)
 
 
