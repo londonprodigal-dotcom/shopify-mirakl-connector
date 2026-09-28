@@ -71,15 +71,19 @@ try { db.exec('ALTER TABLE checkout_cid ADD COLUMN scid TEXT'); } catch {}      
 try { db.exec('ALTER TABLE checkout_cid ADD COLUMN fbp TEXT'); } catch {}
 try { db.exec('ALTER TABLE checkout_cid ADD COLUMN fbc TEXT'); } catch {}
 try { db.exec('ALTER TABLE checkout_cid ADD COLUMN gclid TEXT'); } catch {}
-const putCheckoutCid   = db.prepare(`INSERT INTO checkout_cid (checkout_token, cid, session_id, session_number, scid, fbp, fbc, gclid, created_at)
-  VALUES (@token, @cid, @sid, @sct, @scid, @fbp, @fbc, @gclid, @ts)
+// 2026-09-23: Pinterest (_epik) and Microsoft (_uetmsclkid) click ids read by the checkout pixel, same fallback role.
+try { db.exec('ALTER TABLE checkout_cid ADD COLUMN epik TEXT'); } catch {}
+try { db.exec('ALTER TABLE checkout_cid ADD COLUMN msclkid TEXT'); } catch {}
+const putCheckoutCid   = db.prepare(`INSERT INTO checkout_cid (checkout_token, cid, session_id, session_number, scid, fbp, fbc, gclid, epik, msclkid, created_at)
+  VALUES (@token, @cid, @sid, @sct, @scid, @fbp, @fbc, @gclid, @epik, @msclkid, @ts)
   ON CONFLICT(checkout_token) DO UPDATE SET
     cid=COALESCE(excluded.cid, cid), session_id=COALESCE(excluded.session_id, session_id),
     session_number=COALESCE(excluded.session_number, session_number),
     scid=COALESCE(excluded.scid, scid),
     fbp=COALESCE(excluded.fbp, fbp), fbc=COALESCE(excluded.fbc, fbc), gclid=COALESCE(excluded.gclid, gclid),
+    epik=COALESCE(excluded.epik, epik), msclkid=COALESCE(excluded.msclkid, msclkid),
     created_at=excluded.created_at`);
-const getCheckoutCid   = db.prepare('SELECT cid, session_id, session_number, scid, fbp, fbc, gclid FROM checkout_cid WHERE checkout_token = ?');
+const getCheckoutCid   = db.prepare('SELECT cid, session_id, session_number, scid, fbp, fbc, gclid, epik, msclkid FROM checkout_cid WHERE checkout_token = ?');
 const purgeCheckoutCid = db.prepare('DELETE FROM checkout_cid WHERE created_at < ?');
 
 // product_id -> Meta catalogue content_id ("/products/<handle>#product"), captured by the checkout pixel from the
@@ -339,6 +343,18 @@ app.get('/health/touch', (_q, res) => { try { const c = countTouch.get(); res.js
 
 app.post('/kx-resolve', express.json({ limit: '4kb' }), (req, res) => { kxCors(res); return kx.handle(req, res); });
 app.get('/health/kx', (_q, res) => res.json({ ok: true, ...kx.stats() }));
+// Shopify-browser identity rows, for seeding the sGTM Stape Store: GET /export/scid-identity?since=<ms>&limit=<n>,
+// header X-Export-Key. Same auth and cursor shape as /export/touch. Hashes only - no raw identity exists in this
+// table to leak. Consent-declined browsers are DELETED at capture time, so an export is already consent-clean.
+app.get('/export/scid-identity', (req, res) => {
+  if (!EXPORT_API_KEY) return res.status(503).json({ error: 'export disabled' });
+  if (String(req.headers['x-export-key'] || '') !== String(EXPORT_API_KEY)) return res.status(401).json({ error: 'unauthorised' });
+  try {
+    const rows = kx.exportScids(req.query.since, req.query.limit);
+    const next = rows.length ? rows[rows.length - 1].updated_at : (Number(req.query.since) || 0);
+    return res.json({ ok: true, count: rows.length, next_since: next, rows });
+  } catch (e) { console.error('export/scid-identity failed', e.message); return res.status(500).json({ error: 'export failed' }); }
+});
 
 app.options('/checkout-cid', (_q, r) => { cidCors(r); r.status(204).end(); });
 app.post('/checkout-cid', express.json({ limit: '16kb' }), (req, res) => {
@@ -357,9 +373,13 @@ app.post('/checkout-cid', express.json({ limit: '16kb' }), (req, res) => {
     const validFbp   = /^fb\.[0-9]\.[0-9]{10,16}\.[0-9]{1,24}$/.test(fbpIn) ? fbpIn : null;
     const validFbc   = /^fb\.[0-9]\.[0-9]{10,16}\.[A-Za-z0-9_-]{8,512}$/.test(fbcIn) ? fbcIn : null;
     const validGclid = /^[A-Za-z0-9_-]{10,200}$/.test(gclIn) ? gclIn : null;
-    if (token && (validCid || validSid || validScid || validFbp || validFbc || validGclid)) {   // scid alone is enough: it keys the anchor-restore for the no-cid cohort
+    // 2026-09-23: Pinterest epik (base64url-ish token) and Microsoft msclkid (32 hex), strict shapes only
+    const epikIn = String(req.body?.epik || '').trim(), msIn = String(req.body?.msclkid || '').trim();
+    const validEpik = /^[A-Za-z0-9_.=-]{10,512}$/.test(epikIn) ? epikIn : null;
+    const validMs   = /^[A-Za-z0-9_-]{16,100}$/.test(msIn) ? msIn : null;
+    if (token && (validCid || validSid || validScid || validFbp || validFbc || validGclid || validEpik || validMs)) {   // scid alone is enough: it keys the anchor-restore for the no-cid cohort
       putCheckoutCid.run({ token, cid: validCid, sid: validSid, sct: validSct, scid: validScid,
-                           fbp: validFbp, fbc: validFbc, gclid: validGclid, ts: Date.now() });
+                           fbp: validFbp, fbc: validFbc, gclid: validGclid, epik: validEpik, msclkid: validMs, ts: Date.now() });
       purgeCheckoutCid.run(Date.now() - Number(CHECKOUT_CID_TTL_DAYS) * 86400000);
     }
     // 2026-09-15 SHOPIFY IDENTITY SPINE: bank scid -> hashed email/phone the moment checkout gives us identity.

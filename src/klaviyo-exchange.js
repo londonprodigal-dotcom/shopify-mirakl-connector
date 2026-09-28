@@ -99,6 +99,10 @@ export function createKxResolver(db, env = process.env) {
   const emDel     = db.prepare('DELETE FROM em_map WHERE cid = ?');
   const emPutRaw  = db.prepare('INSERT OR REPLACE INTO em_map (cid, em_hash, ph_hash, updated_at) VALUES (?, ?, ?, ?)');
   const emScidCount = db.prepare("SELECT COUNT(*) n, SUM(CASE WHEN ph_hash IS NOT NULL THEN 1 ELSE 0 END) ph FROM em_map WHERE cid LIKE 'scid:%'");
+  // 2026-09-22: cursor-paged export of the Shopify-browser identity rows, added to seed the sGTM-side
+  // Stape Store (collection joy_identity) so the server-side lookup is useful from day one instead of
+  // starting empty. Read-only; hashes only - this table has never held raw identity.
+  const emScidExport = db.prepare("SELECT cid, em_hash, ph_hash, updated_at FROM em_map WHERE updated_at > ? ORDER BY updated_at LIMIT ?");
   const emPurge = db.prepare('DELETE FROM em_map WHERE updated_at < ?');
   const emCount = db.prepare('SELECT COUNT(*) n, SUM(CASE WHEN ph_hash IS NOT NULL THEN 1 ELSE 0 END) ph FROM em_map');
   const cGet   = db.prepare('SELECT em_hash, ph_hash, resolved_at FROM kx_cache WHERE kx = ?');
@@ -164,6 +168,37 @@ export function createKxResolver(db, env = process.env) {
       counters.scid_banked++;
       return true;
     } catch (e) { console.error('[kx] scid bank failed', e.message); return false; }
+  }
+
+  // Rows above a cursor, oldest first. Returns the BARE uuid AND the 'shp.'-prefixed excid, because the
+  // browse events key on the prefixed form while this table stores bare - doing the join here keeps that
+  // single source of truth in one place. The SCID_TTL_DAYS horizon lookupScid enforces is applied here
+  // too, so an export can never hand out identity the live lookup would itself refuse to answer with.
+  function exportScids(since, limit) {
+    const horizon = Date.now() - Number(SCID_TTL_DAYS) * 86400000;
+    const lim = Math.min(Math.max(Number(limit) || 1000, 1), 5000);
+    return emScidExport
+      .all(Number(since) || 0, lim)
+      .filter((r) => Number(r.updated_at || 0) > horizon)
+      .filter((r) => r.em_hash || r.ph_hash)
+      .map((r) => {
+        const raw = String(r.cid);
+        // Two row kinds share this table. 'scid:<uuid>' rows are the Shopify browser
+        // id; everything else is keyed on the GA client id. Both are worth exporting,
+        // and the GA ones are arguably worth MORE: Stape's Cookie Keeper extends the
+        // _ga cookie but not shopify_client_id (dashboard, 2026-09-22), so a GA-keyed
+        // row survives Safari's 7-day reset where a Shopify-keyed one does not.
+        const isScid = raw.slice(0, 5) === 'scid:';
+        const bare = isScid ? raw.slice(5) : raw;
+        return {
+          kind: isScid ? 'scid' : 'ga_cid',
+          key: isScid ? 'shp.' + bare : bare,
+          bare: bare,
+          em: r.em_hash || null,
+          ph: r.ph_hash || null,
+          updated_at: r.updated_at,
+        };
+      });
   }
 
   // Known scid -> stored hashes, or null. No fallback matching of any kind: unknown browser returns nothing.
@@ -297,5 +332,5 @@ export function createKxResolver(db, env = process.env) {
     catch (e) { return { active, error: e.message }; }
   }
 
-  return { handle, stats, active, captureCidEmail, captureScidIdentity, lookupScid };
+  return { handle, stats, active, captureCidEmail, captureScidIdentity, lookupScid, exportScids };
 }

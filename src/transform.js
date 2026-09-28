@@ -303,6 +303,10 @@ export function buildEvent(order, orderId, clientId, contentByProductId = {}, se
     gclid: na.attribution_gclid,
     gbraid: na.attribution_gbraid,
     wbraid: na.attribution_wbraid,
+    // 2026-09-23: Pinterest + Microsoft click ids, top-level where their Stape templates look in a cookie-less
+    // server hit: Pinterest reads eventData.click_id (after URL/_epik cookie); Microsoft reads eventData.uet_msclkid.
+    click_id: na.attribution_epik,
+    uet_msclkid: na.attribution_msclkid,
     ecommerce: {                                        // kept for the ed variables (31-47) + Meta/Pinterest templates
       transaction_id: orderId,
       value,
@@ -339,6 +343,7 @@ export function buildMetaPurchase(order, event, { pageLocation, testEventCode } 
     phone: id.sha256_phone_number,                      // top-level: the Stape Meta template reads eventData.phone (64-hex passes through), NOT user_data.sha256_phone_number (verified on JOY-22728)
     test_event_code: testEventCode || undefined,
     meta_copy: 1,                                       // marker for sGTM exceptions / log filtering
+    relay_copy: 1,                                      // 2026-09-23: distinguishes THIS copy from the checkout pixel's (which also sets meta_copy) - sGTM trigger 'non-relay purchase' keeps Pinterest/Microsoft on the relay copy only
   });
 }
 
@@ -411,7 +416,8 @@ export function mergeAttributionFallback(order, row) {
   const have = {};
   for (const a of list) if (a && a.name) have[a.name] = a.value;
   const added = [];
-  for (const [name, value] of [['attribution_fbp', row.fbp], ['attribution_fbc', row.fbc], ['attribution_gclid', row.gclid]]) {
+  for (const [name, value] of [['attribution_fbp', row.fbp], ['attribution_fbc', row.fbc], ['attribution_gclid', row.gclid],
+                               ['attribution_epik', row.epik], ['attribution_msclkid', row.msclkid]]) {   // epik/msclkid: 2026-09-23
     if (value && !have[name]) { list.push({ name, value: String(value) }); added.push(name); }
   }
   return added;

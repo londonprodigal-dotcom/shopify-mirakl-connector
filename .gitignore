@@ -19,3 +19,7 @@ credentials/
 *.log
 npm-debug.log*
 .DS_Store
+
+*.bak
+.env*
+node_modules/
