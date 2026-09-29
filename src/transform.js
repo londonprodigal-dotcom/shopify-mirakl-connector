@@ -1,7 +1,7 @@
 // Pure transform: raw Shopify orders/create JSON -> clean server purchase event for sGTM /data.
 // No side effects (no DB, no network) so it can be unit-tested in isolation.
 import crypto from 'node:crypto';
-import { normPhone } from './google-ec.js';   // E.164 with billing-country dial code (2026-08-31: shared by EC + Meta legs)
+import { normPhone, orderPhone } from './google-ec.js';   // E.164 with billing-country dial code (2026-08-31: shared by EC + Meta legs)
 
 export const clean = (o) =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== ''));
@@ -204,8 +204,8 @@ export function buildEvent(order, orderId, clientId, contentByProductId = {}, se
   // "07..." number would otherwise hash to a value Meta can never match. Unresolvable phones are dropped.
   const country   = (b.country_code || '').toUpperCase() || undefined;
   const email     = order.email || order.contact_email || order.customer?.email;
-  const phoneRaw  = order.phone || b.phone || order.customer?.phone;
-  const phoneE164 = e164OrNull(phoneRaw, country);
+  const ph        = orderPhone(order);                                   // incl. shipping_address.phone (2026-09-29)
+  const phoneE164 = e164OrNull(ph.raw, ph.country);
   const address   = clean({ first_name: b.first_name, last_name: b.last_name, city: b.city,
                             region: b.province_code, postal_code: b.zip, country });
   const user_data = clean({
@@ -439,9 +439,9 @@ export function buildStoredIdentity(order) {
 
   const b = order.billing_address || order.shipping_address || {};
   const email = order.email || order.contact_email || order.customer?.email;
-  const phoneRaw = order.phone || b.phone || order.customer?.phone;
+  const ph = orderPhone(order);                                          // incl. shipping_address.phone (2026-09-29)
   const country = (b.country_code || '').toUpperCase() || undefined;
-  const phoneE164 = e164OrNull(phoneRaw, country);                       // 2026-08-31: was bare digits (no dial code) -> unmatchable hash
+  const phoneE164 = e164OrNull(ph.raw, ph.country);                       // 2026-08-31: was bare digits (no dial code) -> unmatchable hash
   const hx = (v, normFn) => (v != null && String(v).trim() !== '') ? sha256(normFn(v)) : undefined;
 
   // Stored in the GA4 hashed user-provided-data shape (sha256_* keys + address). Stape reads

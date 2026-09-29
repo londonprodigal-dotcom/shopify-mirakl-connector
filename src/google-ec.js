@@ -91,6 +91,19 @@ export function normPhone(phone, countryCode) {
   return '+' + dial + digits;
 }
 
+// Phone + the country its dial code should come from. 2026-09-29: shipping_address.phone was never read, so an
+// order whose billing address carried no phone (billing != shipping, some wallets) lost the key entirely even
+// though checkout requires a shipping phone (30/30 orders 22-29 Sep). Shared by the Meta and Google EC legs.
+export function orderPhone(order) {
+  const bill = order.billing_address || {}, ship = order.shipping_address || {};
+  const cc = (a) => String(a.country_code || '').toUpperCase();
+  if (order.phone) return { raw: order.phone, country: cc(bill) || cc(ship) };
+  if (bill.phone)  return { raw: bill.phone,  country: cc(bill) || cc(ship) };
+  if (ship.phone)  return { raw: ship.phone,  country: cc(ship) || cc(bill) };
+  if (order.customer?.phone) return { raw: order.customer.phone, country: cc(bill) || cc(ship) };
+  return { raw: null, country: cc(bill) || cc(ship) };
+}
+
 const normName = (s) => String(s).trim().toLowerCase();
 
 // consent gate: GE_consentPrefs note attribute, JSON {"marketing":"yes"|"no",...}. Only an EXPLICIT "no" blocks.
@@ -126,9 +139,9 @@ export function buildEnhancement(order, orderId, { customerId, conversionActionI
   if (email && String(email).trim()) {
     identifiers.push({ userIdentifierSource: 'FIRST_PARTY', hashedEmail: sha256hex(normEmail(email)) });
   }
-  const phoneRaw = order.phone || b.phone || order.customer?.phone;
-  if (phoneRaw) {
-    const e164 = normPhone(phoneRaw, country);
+  const ph = orderPhone(order);
+  if (ph.raw) {
+    const e164 = normPhone(ph.raw, ph.country);
     if (e164) identifiers.push({ userIdentifierSource: 'FIRST_PARTY', hashedPhoneNumber: sha256hex(e164) });
   }
   if (b.first_name && b.last_name && country && b.zip) {              // addressInfo needs the full quartet
