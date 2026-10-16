@@ -162,50 +162,72 @@ def _process_order(order, dry, counts):
 def log_cycle(backfill_days=None):
     """Copy Stape outgoing logs into local state before they age out.
 
-    Stape keeps 10 days on the Business plan, so this only has to run often
-    enough to stay inside that. Nothing leaves the estate — it is a read from
+    Stape keeps plan.logDayLimit days (3 on Pro+), so this only has to run
+    often enough to stay inside that. Nothing leaves the estate — it is a read from
     Stape and a write to our own SQLite — so it is not gated on DRY_RUN, only
     on ENABLE_STAPE_LOGS.
 
     backfill_days pulls a wider window on demand (capped at the retention
     limit); the scheduled path uses the watermark with a 30-minute overlap.
+    The watermark advances after every successful fetch.
     """
     if not flag("ENABLE_STAPE_LOGS"):
         return {"skipped": "ENABLE_STAPE_LOGS off"}
 
     now = datetime.now(timezone.utc)
-    retention = int(os.environ.get("STAPE_LOG_RETENTION_DAYS", "10"))
+    # Retention comes from the Stape plan (logDayLimit; Pro+ = 3 days). The env
+    # var, if set, can only narrow it. Stape rejects a start older than the
+    # limit with a 400, so the floor sits an hour inside it.
+    plan_days = stape_client.log_day_limit()
+    env_days = os.environ.get("STAPE_LOG_RETENTION_DAYS")
+    retention = min(plan_days, int(env_days)) if env_days else plan_days
+    floor = now - timedelta(days=retention) + timedelta(hours=1)
     if backfill_days:
-        start = now - timedelta(days=min(int(backfill_days), retention))
+        start = max(now - timedelta(days=int(backfill_days)), floor)
     else:
         wm = state.get("stape_log_watermark")
         if wm:
             start = datetime.fromtimestamp(float(wm), tz=timezone.utc) - timedelta(minutes=30)
         else:
             start = now - timedelta(days=1)
-        floor = now - timedelta(days=retention)
         if start < floor:
-            log(f"log_cycle: watermark older than {retention}d retention, clamping")
+            log(f"log_cycle: watermark {start.isoformat()} older than {retention}d "
+                f"retention, clamping to {floor.isoformat()} (gap is unrecoverable)")
             start = floor
 
     platform = os.environ.get("STAPE_LOG_PLATFORM", "Facebook")
-    try:
-        records, partial = stape_client.collect(
-            start.timestamp(), now.timestamp(), platform=platform)
-    except Exception as e:
-        log(f"log_cycle: fetch failed: {e}")
-        return {"error": str(e)[:300]}
+    records, partial = None, False
+    for _ in range(6):
+        try:
+            records, partial = stape_client.collect(
+                start.timestamp(), now.timestamp(), platform=platform)
+            break
+        except stape_client.StartOutOfRange as e:
+            # Retention shorter than the plan says: step forward and retry.
+            start = start + timedelta(hours=6)
+            log(f"log_cycle: {e}; retrying from {start.isoformat()}")
+            if start >= now - timedelta(hours=1):
+                break
+        except Exception as e:
+            log(f"log_cycle: fetch failed: {e}")
+            return {"error": str(e)[:300]}
+    if records is None:
+        log("log_cycle: fetch failed: no start inside Stape retention")
+        return {"error": "no start inside Stape retention"}
 
     inserted = state.stape_insert(records)
-    # Only advance on a complete read; a truncated page would skip rows.
-    if not partial:
-        state.set_("stape_log_watermark", now.timestamp())
+    # collect() already halves the window down to 15 minutes when a page is
+    # truncated, so a residual partial means >1000 rows in 15 minutes. Holding
+    # the watermark on that would stall the feed for good (it would age out of
+    # retention), so advance anyway and say so.
+    state.set_("stape_log_watermark", now.timestamp())
     state.set_("last_log_cycle", now.isoformat())
 
     result = {"window_start": start.isoformat(), "window_end": now.isoformat(),
               "fetched": len(records), "new": inserted, "partial": bool(partial)}
     if partial:
-        log("log_cycle: partial response — watermark held, next run re-reads")
+        log("log_cycle: WARNING residual partial after splitting — some rows "
+            "may be missing from this window")
     state.set_("last_log_cycle_counts", str(result))
     log(f"log_cycle done: {result}")
     return result

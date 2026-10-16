@@ -12,7 +12,7 @@ import state
 app = FastAPI(title="attribution-bridge")
 CYCLE_MINUTES = int(os.environ.get("CYCLE_MINUTES", "15"))
 AUDIENCE_HOUR_UTC = int(os.environ.get("AUDIENCE_HOUR_UTC", "3"))
-# Stape keeps 10 days, so 3-hourly leaves a very large safety margin.
+# Stape keeps 3 days on Pro+, so 3-hourly leaves a comfortable margin.
 LOG_CYCLE_MINUTES = int(os.environ.get("LOG_CYCLE_MINUTES", "180"))
 GCLID_CYCLE_MINUTES = int(os.environ.get("GCLID_CYCLE_MINUTES", "360"))
 
