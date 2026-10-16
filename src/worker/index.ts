@@ -48,6 +48,11 @@ export async function startWorker(): Promise<void> {
   // Shopify webhook since the last sweep; re-enqueues stock_update when Mirakl
   // now has an active offer for them (PA01-race mitigation).
   scheduleRecurring('resurrection_poll', 3_600_000);
+  // Shopify webhook subscriptions — verify/repair every 6h (they were silently
+  // lost for Jun–Oct 2026). Runs once at startup via scheduleRecurring.
+  scheduleRecurring('webhook_health', 6 * 3_600_000);
+  // Polling safety net for refund + fulfilment webhooks — every 30 min.
+  scheduleRecurring('order_sweep', 1_800_000);
   scheduleNightlyAudit(config.hardening.fullAuditHourUtc);
   // Weekly operator triage — Mon 08:00 UTC. HTML digest of open catalog orphans.
   scheduleWeeklyTriage(8);

@@ -214,6 +214,46 @@ function normaliseProduct(raw: GqlProductNode): ShopifyProduct {
   };
 }
 
+// ─── Order sweep types ────────────────────────────────────────────────────────
+
+interface SweepOrderNode {
+  legacyResourceId: string;
+  refunds: Array<{
+    legacyResourceId: string;
+    createdAt: string;
+    note: string | null;
+    refundLineItems: { nodes: Array<{
+      quantity: number;
+      subtotalSet: { shopMoney: { amount: string; currencyCode: string } };
+      lineItem: { id: string; sku: string | null };
+    }> };
+  }> | null;
+  fulfillments: Array<{
+    legacyResourceId: string;
+    status: string;
+    createdAt: string;
+    trackingInfo: Array<{ number: string | null; url: string | null; company: string | null }> | null;
+  }> | null;
+}
+
+export interface SweepOrder {
+  orderId: number;
+  refunds: Array<{
+    id: number;
+    createdAt: string;
+    note: string | null;
+    lines: Array<{ lineItemId: number; sku: string; quantity: number; subtotal: number; currency: string }>;
+  }>;
+  fulfillments: Array<{
+    id: number;
+    status: string;          // GraphQL enum, e.g. 'SUCCESS'
+    createdAt: string;
+    trackingNumber: string | null;
+    trackingUrl: string | null;
+    trackingCompany: string | null;
+  }>;
+}
+
 // ─── ShopifyClient ────────────────────────────────────────────────────────────
 
 export class ShopifyClient {
@@ -395,6 +435,102 @@ export class ShopifyClient {
       line_items: Array<{ id: number; sku: string; variant_id: number; quantity: number; name: string }>;
     } }>(`/orders/${orderId}.json`);
     return result.order;
+  }
+
+  // ─── Webhook subscriptions (owned by this app's client credentials) ────────
+
+  async listWebhookSubscriptions(): Promise<Array<{ id: string; topic: string; callbackUrl: string | null }>> {
+    const res = await this.gql<{ data: { webhookSubscriptions: { edges: Array<{ node: {
+      id: string; topic: string; endpoint: { __typename: string; callbackUrl?: string };
+    } }> } } }>(`{
+      webhookSubscriptions(first: 100) {
+        edges { node { id topic endpoint { __typename ... on WebhookHttpEndpoint { callbackUrl } } } }
+      }
+    }`);
+    return res.data.webhookSubscriptions.edges.map(e => ({
+      id: e.node.id,
+      topic: e.node.topic,
+      callbackUrl: e.node.endpoint?.callbackUrl ?? null,
+    }));
+  }
+
+  async createWebhookSubscription(topic: string, callbackUrl: string): Promise<string> {
+    const res = await this.gql<{ data: { webhookSubscriptionCreate: {
+      userErrors: Array<{ field: string[]; message: string }>;
+      webhookSubscription: { id: string } | null;
+    } } }>(
+      `mutation($topic: WebhookSubscriptionTopic!, $sub: WebhookSubscriptionInput!) {
+        webhookSubscriptionCreate(topic: $topic, webhookSubscription: $sub) {
+          userErrors { field message }
+          webhookSubscription { id }
+        }
+      }`,
+      { topic, sub: { callbackUrl, format: 'JSON' } }
+    );
+    const payload = res.data.webhookSubscriptionCreate;
+    if (payload.userErrors.length > 0 || !payload.webhookSubscription) {
+      throw new Error(`webhookSubscriptionCreate ${topic}: ${payload.userErrors.map(e => e.message).join('; ')}`);
+    }
+    return payload.webhookSubscription.id;
+  }
+
+  // ─── Refunds + fulfilments for a batch of orders (order sweep) ──────────────
+
+  async fetchOrdersRefundsAndFulfilments(orderIds: number[]): Promise<SweepOrder[]> {
+    if (orderIds.length === 0) return [];
+    const res = await this.gql<{ data: { nodes: Array<SweepOrderNode | null> } }>(
+      `query($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on Order {
+            legacyResourceId
+            refunds(first: 20) {
+              legacyResourceId
+              createdAt
+              note
+              refundLineItems(first: 50) {
+                nodes {
+                  quantity
+                  subtotalSet { shopMoney { amount currencyCode } }
+                  lineItem { id sku }
+                }
+              }
+            }
+            fulfillments(first: 20) {
+              legacyResourceId
+              status
+              createdAt
+              trackingInfo(first: 1) { number url company }
+            }
+          }
+        }
+      }`,
+      { ids: orderIds.map(id => `gid://shopify/Order/${id}`) }
+    );
+    return res.data.nodes
+      .filter((n): n is SweepOrderNode => !!n && !!n.legacyResourceId)
+      .map(n => ({
+        orderId: Number(n.legacyResourceId),
+        refunds: (n.refunds ?? []).map(r => ({
+          id: Number(r.legacyResourceId),
+          createdAt: r.createdAt,
+          note: r.note,
+          lines: r.refundLineItems.nodes.map(l => ({
+            lineItemId: Number(l.lineItem.id.split('/').pop()),
+            sku: l.lineItem.sku ?? '',
+            quantity: l.quantity,
+            subtotal: Number(l.subtotalSet.shopMoney.amount),
+            currency: l.subtotalSet.shopMoney.currencyCode,
+          })),
+        })),
+        fulfillments: (n.fulfillments ?? []).map(f => ({
+          id: Number(f.legacyResourceId),
+          status: f.status,
+          createdAt: f.createdAt,
+          trackingNumber: f.trackingInfo?.[0]?.number ?? null,
+          trackingUrl: f.trackingInfo?.[0]?.url ?? null,
+          trackingCompany: f.trackingInfo?.[0]?.company ?? null,
+        })),
+      }));
   }
 
   // ─── Inventory item → SKU lookup (for stock webhooks) ───────────────────────

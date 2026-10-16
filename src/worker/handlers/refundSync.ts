@@ -1,6 +1,7 @@
 import { loadConfig } from '../../config';
 import { MiraklClient } from '../../miraklClient';
 import { logger } from '../../logger';
+import { TerminalMiraklError } from '../../queue/types';
 
 /**
  * Worker handler for refund_sync jobs.
@@ -89,7 +90,23 @@ export async function handleRefundSync(payload: Record<string, unknown>): Promis
     return;
   }
 
-  await mirakl.requestRefund(miraklOrderId, refundLines);
+  try {
+    await mirakl.requestRefund(miraklOrderId, refundLines);
+  } catch (err) {
+    // A 400 here almost always means the line was already refunded on Debenhams
+    // (operator refunded by hand, e.g. during the Jun–Oct 2026 webhook outage).
+    // Retrying cannot help, so record it as a skipped job + info alert instead
+    // of burning retries into a critical dead-letter.
+    const e = err as { response?: { status?: number; data?: unknown } };
+    if (e?.response?.status === 400) {
+      const body = typeof e.response.data === 'string' ? e.response.data : JSON.stringify(e.response.data ?? '');
+      throw new TerminalMiraklError(
+        `Mirakl rejected refund for ${miraklOrderId} (likely already refunded): ${body.slice(0, 300)}`,
+        { code: 'refund_rejected' }
+      );
+    }
+    throw err;
+  }
 
   logger.info('Refund synced to Mirakl', {
     miraklOrderId,

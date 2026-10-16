@@ -32,7 +32,7 @@ function extractMiraklOrderId(note: string | null, tags: string | null): string 
 }
 
 /** Map Shopify carrier names to Royal Mail defaults for Louche */
-function mapCarrier(trackingCompany: string | null | undefined): {
+export function mapCarrier(trackingCompany: string | null | undefined): {
   carrierCode: string;
   carrierName: string;
   carrierUrl: string;
