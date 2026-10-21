@@ -12,6 +12,7 @@ import { handleBatchSync } from './handlers/batchSync';
 import { handleResurrectionPoll } from './handlers/resurrectionPoller';
 import { handleWeeklyTriage } from './handlers/weeklyTriage';
 import { handleRestoreDelisted } from './handlers/restoreDelisted';
+import { handleRelistOffers } from './handlers/relistOffers';
 import { handleWebhookHealth } from './handlers/webhookHealth';
 import { handleOrderSweep } from './handlers/orderSweep';
 import { logger } from '../logger';
@@ -32,6 +33,7 @@ const handlers: Record<string, Handler> = {
   resurrection_poll: handleResurrectionPoll,
   weekly_triage: handleWeeklyTriage,
   restore_delisted: handleRestoreDelisted,
+  relist_offers: handleRelistOffers,
   webhook_health: handleWebhookHealth,
   order_sweep: handleOrderSweep,
 };

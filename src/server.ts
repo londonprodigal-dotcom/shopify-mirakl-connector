@@ -602,6 +602,27 @@ export async function startServer(config: AppConfig): Promise<void> {
     }
   });
 
+  // ── Admin: Re-create offers deleted on the Mirakl side (incident recovery) ─
+  app.post('/admin/relist-offers', express.json(), async (req, res) => {
+    try {
+      const { lostSince, lostUntil, dryRun } = (req.body ?? {}) as { lostSince?: string; lostUntil?: string; dryRun?: boolean };
+      if (!lostSince || !lostUntil) { res.status(400).json({ error: 'lostSince and lostUntil (ISO) required' }); return; }
+      // Defaults to a dry run; a live push needs an explicit dryRun:false AND
+      // the ADMIN_API_KEY header (refused outright if the variable is unset).
+      const isDryRun = dryRun !== false;
+      if (!isDryRun) {
+        const key = process.env.ADMIN_API_KEY;
+        if (!key || req.header('x-admin-key') !== key) { res.status(403).json({ error: 'live relist requires x-admin-key' }); return; }
+      }
+      const { enqueueJob } = await import('./queue/enqueue');
+      await enqueueJob('relist_offers', { lostSince, lostUntil, dryRun: isDryRun });
+      logger.info('[admin] relist_offers job enqueued', { lostSince, lostUntil, dryRun: isDryRun });
+      res.json({ status: 'ok', dryRun: isDryRun, message: 'relist_offers enqueued — see sync_state.last_relist_offers for result' });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to enqueue', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Admin: Debug reconciliation state ─────────────────────────────────────
   app.get('/admin/debug/reconcile-state', async (_req, res) => {
     try {
