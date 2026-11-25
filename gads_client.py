@@ -114,7 +114,7 @@ def resolve_gclids(pending, lookback_days=None):
         return {}
 
     if lookback_days is None:
-        lookback_days = int(os.environ.get("GCLID_LOOKBACK_DAYS", "30"))
+        lookback_days = int(os.environ.get("GCLID_LOOKBACK_DAYS", "89"))
 
     dates = set()
     today = datetime.now(timezone.utc).date()
