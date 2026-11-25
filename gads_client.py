@@ -92,13 +92,16 @@ def upload_refund_adjustment(conversion_action, order_id, refund_iso,
 
 # ── gclid → campaign ─────────────────────────────────────────────────────────
 
-def resolve_gclids(pending, lookback_days=2):
+def resolve_gclids(pending, lookback_days=None):
     """Map gclids to their campaign via the click_view report.
 
     click_view has two hard constraints: exactly one day per query, and a
-    90-day lookback. Clicks usually land on or just before the order date, so
-    each order date is expanded to itself plus `lookback_days` before it, the
-    set of dates is deduped, and each is queried once.
+    90-day lookback. The click can precede the order by days or weeks (the
+    gclid is held in a cookie / cart attribute until checkout), so each order
+    date is expanded to itself plus `lookback_days` before it (default 30,
+    env GCLID_LOOKBACK_DAYS; it was 2, which left ~20% of gclids unresolvable),
+    the set of dates is deduped, and each is queried once, newest first, stopping
+    as soon as every wanted gclid is found.
 
     `pending` is a list of {gclid, order_id, order_date}. Returns a dict of
     gclid -> {campaign_id, campaign_name, ad_group_id, ad_group_name,
@@ -109,6 +112,9 @@ def resolve_gclids(pending, lookback_days=2):
     wanted = {p["gclid"] for p in pending if p.get("gclid")}
     if not wanted:
         return {}
+
+    if lookback_days is None:
+        lookback_days = int(os.environ.get("GCLID_LOOKBACK_DAYS", "30"))
 
     dates = set()
     today = datetime.now(timezone.utc).date()

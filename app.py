@@ -83,6 +83,16 @@ def run_gclid_cycle(x_api_key: str = Header(default="")):
     return bridge.gclid_cycle()
 
 
+@app.post("/gclid-retry")
+def gclid_retry(x_api_key: str = Header(default="")):
+    """Reset retry counters on unresolved gclids and run a resolve cycle.
+    Read-only against Google Ads; only touches the bridge's own state."""
+    _check_key(x_api_key)
+    reset = state.gclid_reset_unresolved()
+    result = bridge.gclid_cycle()
+    return {"reset": reset, "cycle": result}
+
+
 @app.get("/export/stape-events")
 def export_stape_events(after_seq: int = 0, limit: int = 5000,
                         x_api_key: str = Header(default="")):

@@ -201,6 +201,16 @@ def gclid_resolve(gclid, campaign_id, campaign_name, ad_group_id=None,
                    click_date, time.time(), gclid))
 
 
+def gclid_reset_unresolved():
+    """Give every unresolved gclid a fresh set of attempts (used after the
+    lookback fix, so gclids that exhausted their retries under the old 2-day
+    window are searched again). Returns the number reset."""
+    with _lock, _conn() as c:
+        cur = c.execute("UPDATE gclid_campaigns SET attempts = 0 "
+                        "WHERE resolved = 0 AND attempts > 0")
+        return cur.rowcount
+
+
 def gclid_bump_attempts(gclids):
     if not gclids:
         return

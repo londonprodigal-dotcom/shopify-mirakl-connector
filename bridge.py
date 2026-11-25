@@ -263,10 +263,24 @@ def gclid_cycle():
                             info.get("ad_group_id"), info.get("ad_group_name"),
                             info.get("click_date"))
     missed = [p["gclid"] for p in pending if p["gclid"] not in found]
-    state.gclid_bump_attempts(missed)
+    # click_view lags: a click from the last ~2 days may simply not be in the
+    # report yet, so a miss on a fresh order must not use up one of its retries.
+    fresh_hours = float(os.environ.get("GCLID_FRESH_HOURS", "48"))
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=fresh_hours)
+    fresh = set()
+    for p in pending:
+        try:
+            od = datetime.fromisoformat((p.get("order_date") or "").replace("Z", "+00:00"))
+            if od.tzinfo is None:
+                od = od.replace(tzinfo=timezone.utc)
+            if od >= cutoff:
+                fresh.add(p["gclid"])
+        except ValueError:
+            pass
+    state.gclid_bump_attempts([g for g in missed if g not in fresh])
 
     result = {"pending": len(pending), "resolved": len(found),
-              "unresolved": len(missed)}
+              "unresolved": len(missed), "fresh_not_counted": len(fresh & set(missed))}
     state.set_("last_gclid_cycle", datetime.now(timezone.utc).isoformat())
     state.set_("last_gclid_counts", str(result))
     log(f"gclid_cycle done: {result}")
